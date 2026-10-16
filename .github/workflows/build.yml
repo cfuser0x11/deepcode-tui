@@ -1,0 +1,112 @@
+name: Build DeepCode
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to set (e.g. 1.0.0). Optional, defaults to auto-version"
+        required: false
+        type: string
+      create_release:
+        description: "Publish as GitHub Release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Multiplatform Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+
+      - name: Install cross-platform binary dependencies
+        run: |
+          cd packages/cli
+          PKG_CORE=$(node -p "require('./package.json').dependencies['@opentui/core']")
+          PKG_PTY=$(node -p "require('./package.json').dependencies['@opencode-ai/pty']")
+          bun install --os="*" --cpu="*" @opentui/core@$PKG_CORE @opencode-ai/pty@$PKG_PTY
+
+      - name: Compile Multiplatform CLI
+        env:
+          BUN_COMPILE_RELEASE: bun-v1.4.2
+          OPENCODE_CHANNEL: dev
+          OPENCODE_VERSION: ${{ inputs.version || '' }}
+        run: |
+          bun ./packages/cli/script/build.ts
+
+      - name: Package & Rename Binaries
+        run: |
+          mkdir -p build
+          python3 - << 'EOF'
+          import os, shutil
+          from pathlib import Path
+
+          dist_dir = Path("packages/cli/dist")
+          build_dir = Path("build")
+
+          copied = []
+          for root, dirs, files in os.walk(dist_dir):
+              for f in files:
+                  if f in ("opencode", "opencode.exe"):
+                      full_path = Path(root) / f
+                      rel_parts = full_path.relative_to(dist_dir).parts
+                      target_name = rel_parts[0]  # e.g. cli-linux-arm64
+                      platform_suffix = target_name.replace("cli-", "")
+                      ext = ".exe" if f.endswith(".exe") else ""
+                      dest_name = f"deepcode-{platform_suffix}{ext}"
+                      dest_path = build_dir / dest_name
+                      shutil.copy2(full_path, dest_path)
+                      if not ext:
+                          dest_path.chmod(0o755)
+                      copied.append((dest_name, full_path.stat().st_size))
+
+          print(f"Successfully packaged {len(copied)} binaries into build/:")
+          for name, size in sorted(copied):
+              print(f"  {name:35} ({size / (1024*1024):.1f} MB)")
+          EOF
+
+      - name: Upload Binaries as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepcode-binaries
+          path: build/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*
+          name: ${{ inputs.version || github.ref_name }}
+          tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
