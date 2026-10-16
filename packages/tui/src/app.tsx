@@ -546,6 +546,19 @@ function App() {
     }
   })
 
+  let updateAlerted = false
+  createEffect(() => {
+    const notice = updater.notification()
+    if (!notice || notice.type !== "available" || updateAlerted) return
+    updateAlerted = true
+    toast.show({
+      variant: "info",
+      title: "Update available on GitHub",
+      message: `DeepCode ${notice.version} is available. Run /update to view and install.`,
+      action: { label: "Update", run: () => updater.open?.("notification") },
+    })
+  })
+
   const copyOnSelectEnabled = () =>
     (config.data.terminal?.copy ?? (process.platform === "win32" ? "manual" : "select")) === "select"
 
@@ -993,17 +1006,13 @@ function App() {
         },
         category: "System",
       },
-      ...(updater.open
-        ? [
-            {
-              name: "opencode.update",
-              title: "Update OpenCode",
-              slash: { name: "update" },
-              run: () => updater.open?.("manual"),
-              category: "System",
-            },
-          ]
-        : []),
+      {
+        name: "opencode.update",
+        title: "Update DeepCode",
+        slash: { name: "update" },
+        run: () => updater.open?.("manual"),
+        category: "System",
+      },
       {
         name: "server.pair",
         title: "Pair device",

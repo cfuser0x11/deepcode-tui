@@ -13,6 +13,7 @@ export function DialogUpdate(props: {
   skip: () => void
   install: () => Promise<void>
   restart: () => void
+  autoInstall?: boolean
 }) {
   const dialog = useDialog()
   const theme = useTheme().surface("dialog")
@@ -41,6 +42,13 @@ export function DialogUpdate(props: {
     if (unavailable) return { type: "unavailable" as const, message: unavailable }
     return current ?? { type: "current" as const }
   })
+
+  createEffect(() => {
+    if (props.autoInstall && state().type === "available") {
+      void props.install()
+    }
+  })
+
   const buttons = createMemo(() => {
     const type = state().type
     if (type === "installing") return []
@@ -52,7 +60,7 @@ export function DialogUpdate(props: {
           : undefined
     return [
       {
-        label: "Skip",
+        label: type === "current" || type === "check-failed" || type === "unavailable" ? "Close" : "Skip",
         run: () => {
           props.skip()
           dialog.clear()
@@ -90,7 +98,7 @@ export function DialogUpdate(props: {
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text.base}>
           {state().type === "installing"
-            ? "Updating OpenCode"
+            ? "Updating DeepCode"
             : state().type === "available" || state().type === "failed"
               ? "Update available"
               : "Update"}
@@ -104,16 +112,24 @@ export function DialogUpdate(props: {
           {(current) => (
             <Switch>
               <Match when={current.type === "checking"}>
-                <Spinner shimmer={theme.text.base}>Checking for updates…</Spinner>
+                <Spinner shimmer={theme.text.base}>Checking for updates on GitHub…</Spinner>
               </Match>
               <Match when={current.type === "available"}>
-                <text fg={theme.text.muted}>
-                  An update is available. After installing, you'll be prompted to restart OpenCode.
-                </text>
+                <box gap={1}>
+                  <text fg={theme.text.base}>
+                    An update is available on GitHub: {current.version}
+                  </text>
+                  <text fg={theme.text.muted}>
+                    https://github.com/cfuser0x11/deepcode-tui/releases/latest
+                  </text>
+                  <text fg={theme.text.muted}>
+                    After installing, you'll be prompted to restart DeepCode.
+                  </text>
+                </box>
               </Match>
               <Match when={current.type === "installing"}>
                 <Spinner shimmer={theme.text.base}>
-                  {current.type === "installing" ? `Installing OpenCode ${current.version}…` : ""}
+                  {current.type === "installing" ? `Installing DeepCode ${current.version}…` : ""}
                 </Spinner>
               </Match>
               <Match when={current.type === "installed"}>
@@ -122,7 +138,12 @@ export function DialogUpdate(props: {
                 </text>
               </Match>
               <Match when={current.type === "current"}>
-                <text fg={theme.text.muted}>OpenCode is already up to date.</text>
+                <box gap={1}>
+                  <text fg={theme.text.muted}>DeepCode is already up to date.</text>
+                  <text fg={theme.text.muted}>
+                    https://github.com/cfuser0x11/deepcode-tui/releases/latest
+                  </text>
+                </box>
               </Match>
               <Match when={current.type === "unavailable"}>
                 <text fg={theme.text.muted} wrapMode="word">
@@ -130,9 +151,14 @@ export function DialogUpdate(props: {
                 </text>
               </Match>
               <Match when={current.type === "failed" || current.type === "check-failed"}>
-                <text fg={theme.text.feedback.error.base}>
-                  {current.type === "failed" || current.type === "check-failed" ? current.message : ""}
-                </text>
+                <box gap={1}>
+                  <text fg={theme.text.feedback.error.base}>
+                    {current.type === "failed" || current.type === "check-failed" ? current.message : ""}
+                  </text>
+                  <text fg={theme.text.muted}>
+                    https://github.com/cfuser0x11/deepcode-tui/releases/latest
+                  </text>
+                </box>
               </Match>
             </Switch>
           )}

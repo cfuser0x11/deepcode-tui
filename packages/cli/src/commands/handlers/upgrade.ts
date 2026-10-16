@@ -9,11 +9,38 @@ import { stripVTControlCharacters } from "node:util"
 
 export default Runtime.handler(
   Commands.commands.upgrade,
-  Effect.fn("cli.upgrade")(function* () {
-    intro("Upgrade")
-    log.info("Updates are disabled in this standalone build.")
-    outro("Done")
-  }),
+  Effect.fn("cli.upgrade")(
+    function* (input) {
+      intro("Upgrade")
+      const updater = yield* Updater.Service
+      const target = Option.getOrUndefined(input.target) ?? (yield* updater.latest())
+      const version = target.trim().replace(/^v/, "")
+      if (version === OPENCODE_VERSION) {
+        log.warn(`DeepCode upgrade skipped: ${version} is already installed`)
+        log.info("Latest release: https://github.com/cfuser0x11/deepcode-tui/releases/latest")
+        outro("Done")
+        return
+      }
+
+      log.info(`From ${OPENCODE_VERSION} → ${version}`)
+      log.info("Release: https://github.com/cfuser0x11/deepcode-tui/releases/latest")
+      const progress = spinner()
+      progress.start("Upgrading...")
+      yield* updater.apply(version).pipe(
+        Effect.tap(() => Effect.sync(() => progress.stop("Upgrade complete"))),
+        Effect.tapCause(() => Effect.sync(() => progress.stop("Upgrade failed", 1))),
+      )
+      outro("Done")
+    },
+    (effect) =>
+      handlePromptErrors(
+        effect.pipe(
+          Effect.mapError((error) =>
+            error instanceof Updater.UpgradeError ? new Error(formatUpgradeError(error), { cause: error }) : error,
+          ),
+        ),
+      ),
+  ),
 )
 
 function formatUpgradeError(error: Updater.UpgradeError) {

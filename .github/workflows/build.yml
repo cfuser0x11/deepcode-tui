@@ -59,8 +59,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUN_COMPILE_RELEASE: bun-v1.4.2
           OPENCODE_CHANNEL: dev
-          OPENCODE_VERSION: ${{ inputs.version || '' }}
         run: |
+          VERSION="${{ inputs.version }}"
+          if [ -z "$VERSION" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          fi
+          if [ -n "$VERSION" ]; then
+            export OPENCODE_VERSION="$VERSION"
+          fi
           bun ./packages/cli/script/build.ts
 
       - name: Package & Rename Binaries

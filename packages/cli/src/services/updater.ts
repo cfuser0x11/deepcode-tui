@@ -5,6 +5,7 @@ import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_LOCAL, OPENCODE_VERSION }
 import { Context, Duration, Effect, FileSystem, Layer, Option, Ref, Schema } from "effect"
 import { ChildProcess } from "effect/process"
 import { parse, type ParseError } from "jsonc-parser"
+import fsSync from "node:fs"
 import path from "node:path"
 import { stripVTControlCharacters } from "node:util"
 import { RetainedImage } from "./retained-image"
@@ -44,6 +45,89 @@ export class UpgradeError extends Error {
 const decodeVpPackages = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String }))),
 )
+
+export const GITHUB_RELEASES_LATEST_URL = "https://github.com/cfuser0x11/deepcode-tui/releases/latest"
+export const GITHUB_API_LATEST_URL = "https://api.github.com/repos/cfuser0x11/deepcode-tui/releases/latest"
+
+export async function fetchLatestReleaseTag(signal?: AbortSignal): Promise<string> {
+  const timeout = AbortSignal.timeout(10_000)
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+
+  const response = await fetch(GITHUB_RELEASES_LATEST_URL, {
+    method: "HEAD",
+    redirect: "manual",
+    headers: { "User-Agent": "deepcode-tui" },
+    signal: combined,
+  }).catch(() => undefined)
+
+  if (response && response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location")
+    if (location) {
+      const tag = location.split("/").pop()?.trim()
+      if (tag) return tag.replace(/^v/, "")
+    }
+  }
+
+  const apiResponse = await fetch(GITHUB_API_LATEST_URL, {
+    headers: {
+      "User-Agent": "deepcode-tui",
+      Accept: "application/vnd.github.v3+json",
+    },
+    signal: combined,
+  })
+
+  if (!apiResponse.ok) throw new Error(`GitHub release check failed (${apiResponse.status})`)
+  const data = (await apiResponse.json()) as { tag_name?: string }
+  if (typeof data?.tag_name === "string" && data.tag_name.trim().length > 0) {
+    return data.tag_name.trim().replace(/^v/, "")
+  }
+  throw new Error("Could not find release tag from GitHub")
+}
+
+export function isNewer(current: string, latest: string): boolean {
+  if (current === latest) return false
+  const l = parseReleaseVersion(latest)
+  if (!l) return false
+  if (current === "local" || current.startsWith("0.0.0-")) return true
+  const c = parseReleaseVersion(current)
+  if (!c) return true
+  const [cMaj, cMin, cPatch] = c.core.split(".").map(Number)
+  const [lMaj, lMin, lPatch] = l.core.split(".").map(Number)
+  if (lMaj !== cMaj) return lMaj > cMaj
+  if (lMin !== cMin) return lMin > cMin
+  if (lPatch !== cPatch) return lPatch > cPatch
+  if (c.prerelease.length > 0 && l.prerelease.length === 0) return true
+  return false
+}
+
+function isMusl(): boolean {
+  if (process.platform !== "linux") return false
+  try {
+    if (fsSync.existsSync("/etc/alpine-release")) return true
+    const report = process.report?.getReport?.() as { header?: { glibcVersionRuntime?: string } } | undefined
+    if (report?.header && !report.header.glibcVersionRuntime) return true
+  } catch {}
+  return false
+}
+
+function getPlatformAssetName(): string | undefined {
+  const platform = process.platform
+  const arch = process.arch
+  const muslSuffix = isMusl() ? "-musl" : ""
+
+  if (platform === "win32") {
+    if (arch === "x64") return "deepcode-windows-x64.exe"
+    if (arch === "arm64") return "deepcode-windows-arm64.exe"
+  } else if (platform === "darwin") {
+    if (arch === "arm64") return "deepcode-darwin-arm64"
+    if (arch === "x64") return "deepcode-darwin-x64"
+  } else if (platform === "linux") {
+    if (arch === "arm64") return `deepcode-linux-arm64${muslSuffix}`
+    if (arch === "x64") return `deepcode-linux-x64${muslSuffix}`
+  }
+  return undefined
+}
+
 
 const installNames: Record<Method, string> = {
   curl: "The DeepCode installer",
@@ -248,11 +332,24 @@ const make = Effect.gen(function* () {
     }
   }
 
-  const release = Effect.fnUntraced(function* (_method?: Method) {
-    return { package: "deepcode", version: OPENCODE_VERSION }
-  })
+  const latest = (_selected?: Method) =>
+    Effect.tryPromise({
+      try: (signal) => fetchLatestReleaseTag(signal),
+      catch: (cause) =>
+        new UpgradeError(
+          {
+            title: "Could not check for DeepCode updates",
+            detail: errorDetail(cause),
+            retry: "Check your network or visit https://github.com/cfuser0x11/deepcode-tui/releases/latest",
+          },
+          { cause },
+        ),
+    })
 
-  const latest = (_selected?: Method) => Effect.succeed(OPENCODE_VERSION)
+  const release = Effect.fnUntraced(function* (_method?: Method) {
+    const version = yield* latest()
+    return { package: "deepcode", version }
+  })
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -395,27 +492,117 @@ const make = Effect.gen(function* () {
   })
 
   const inspect = Effect.fnUntraced(function* () {
-    return undefined
+    if (["1", "true"].includes(process.env.OPENCODE_DISABLE_AUTOUPDATE?.toLowerCase() ?? "")) {
+      return undefined
+    }
+    const policy = yield* readPolicy()
+    if (policy === "disable") return undefined
+    const latestVersion = yield* latest().pipe(Effect.orElseSucceed(() => undefined))
+    if (!latestVersion) return undefined
+    const current = yield* Ref.get(installedVersion)
+    if (!isNewer(current, latestVersion)) return undefined
+    const displayVersion = latestVersion.startsWith("v") ? latestVersion : `v${latestVersion}`
+    yield* Effect.logInfo("DeepCode update available on GitHub", { current, latest: displayVersion })
+    return { policy, version: displayVersion }
   })
 
-  const install = Effect.fnUntraced(function* (_version: string) {
+  const install = Effect.fnUntraced(function* (inputVersion: string) {
+    const version = inputVersion.trim().replace(/^v/, "")
+    const detected = yield* method()
+    if (detected) {
+      yield* upgrade(detected, version)
+      yield* Ref.set(installedVersion, version)
+      yield* Effect.logInfo("updated DeepCode", { from: yield* Ref.get(installedVersion), to: version, method: detected })
+      return true
+    }
+    const assetName = getPlatformAssetName()
+    const runtime = path.basename(process.execPath, path.extname(process.execPath)).toLowerCase()
+    const isStandaloneBinary = runtime !== "bun" && runtime !== "node" && runtime !== "nodejs"
+    if (assetName && isStandaloneBinary) {
+      const url = `https://github.com/cfuser0x11/deepcode-tui/releases/download/v${version}/${assetName}`
+      yield* fs.makeDirectory(global.cache, { recursive: true })
+      const cacheDir = yield* temporaryDirectory("update-")
+      const downloadPath = path.join(cacheDir, assetName)
+      const res = yield* Effect.tryPromise({
+        try: () => fetch(url, { headers: { "User-Agent": "deepcode-tui" } }),
+        catch: (cause) => new Error(`Failed to download ${url}: ${errorMessage(cause)}`),
+      })
+      if (!res.ok) {
+        return yield* Effect.fail(new Error(`Failed to download binary from GitHub (HTTP ${res.status})`))
+      }
+      const buffer = yield* Effect.tryPromise({
+        try: () => res.arrayBuffer(),
+        catch: (cause) => new Error(`Failed to read download stream: ${errorMessage(cause)}`),
+      })
+      yield* fs.writeFile(downloadPath, new Uint8Array(buffer))
+
+      if (process.platform === "win32") {
+        const oldExecutable = `${executable}.${Date.now()}.old`
+        yield* fs.rename(executable, oldExecutable).pipe(Effect.ignore)
+        yield* fs.copyFile(downloadPath, executable).pipe(
+          Effect.catch(() => fs.rename(downloadPath, executable)),
+        )
+        const dir = path.dirname(executable)
+        const base = path.basename(executable)
+        const entries = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed((): string[] => []))
+        for (const entry of entries) {
+          if (entry.startsWith(base) && entry.endsWith(".old") && entry !== path.basename(oldExecutable)) {
+            yield* fs.remove(path.join(dir, entry)).pipe(Effect.ignore)
+          }
+        }
+      } else {
+        yield* exec(["chmod", "+x", downloadPath]).pipe(Effect.ignore)
+        yield* fs.rename(downloadPath, executable).pipe(
+          Effect.catch(() =>
+            Effect.gen(function* () {
+              yield* fs.remove(executable).pipe(Effect.ignore)
+              yield* fs.copyFile(downloadPath, executable)
+              yield* exec(["chmod", "+x", executable]).pipe(Effect.ignore)
+            }),
+          ),
+        )
+      }
+
+      yield* Ref.set(installedVersion, version)
+      yield* Effect.logInfo("updated DeepCode standalone binary", { to: version })
+      return true
+    }
     return false
   })
 
-  const apply = Effect.fn("cli.updater.apply")(function* (_version: string) {
-    return
+  const apply = Effect.fn("cli.updater.apply")(function* (version: string) {
+    if (!(yield* install(version)))
+      return yield* Effect.fail(
+        new Error(
+          "Could not auto-install update. Download the latest release from https://github.com/cfuser0x11/deepcode-tui/releases/latest",
+        ),
+      )
   })
 
   const check = Effect.fn("cli.updater.check")(function* () {
-    return {
-      type: "unavailable" as const,
-      message: "Updates are disabled in this standalone build.",
+    const latestVersion = yield* latest()
+    const current = yield* Ref.get(installedVersion)
+    const displayVersion = latestVersion.startsWith("v") ? latestVersion : `v${latestVersion}`
+    if (isNewer(current, latestVersion)) {
+      return { type: "available" as const, version: displayVersion }
     }
+    if (current === "local" || current.startsWith("0.0.0-")) {
+      return {
+        type: "unavailable" as const,
+        message: `Running local dev build (${current}). Latest release on GitHub is ${displayVersion}: https://github.com/cfuser0x11/deepcode-tui/releases/latest`,
+      }
+    }
+    return undefined
   })
 
   const run = Effect.fn("cli.updater.run")(
-    function* () {
-      return undefined
+    function* (onInstall: (version: string) => void = () => {}) {
+      const result = yield* inspect()
+      if (!result) return undefined
+      if (result.policy === "notify") return { type: "available" as const, version: result.version }
+      onInstall(result.version)
+      if (!(yield* install(result.version))) return yield* Effect.fail(new Error("Installation method not found"))
+      return { type: "installed" as const, version: result.version }
     },
     Effect.catch((error) => Effect.logWarning("update check failed", { error }).pipe(Effect.as(undefined))),
   )

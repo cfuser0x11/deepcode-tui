@@ -62,10 +62,18 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
     }
 
     const install = async () => {
-      const updater = props.updater
       const current = state()
-      if (!updater || !current || current.type !== "available") return
+      if (!current || current.type !== "available") return
       setState({ type: "installing", version: current.version })
+      const updater = props.updater
+      if (!updater) {
+        setState({
+          type: "failed",
+          message:
+            "Updater service is not available. Please download the release from https://github.com/cfuser0x11/deepcode-tui/releases/latest",
+        })
+        return
+      }
       await updater.apply(current.version).then(
         () => setState({ type: "installed", version: current.version }),
         (error) => setState({ type: "failed", message: errorMessage(error) }),
@@ -74,7 +82,38 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
 
     const check = async (signal: AbortSignal) => {
       const updater = props.updater
-      if (!updater || state()?.type === "installing") return
+      if (state()?.type === "installing") return
+      if (!updater) {
+        try {
+          const res = await fetch("https://github.com/cfuser0x11/deepcode-tui/releases/latest", {
+            method: "HEAD",
+            redirect: "manual",
+            headers: { "User-Agent": "deepcode-tui" },
+            signal,
+          })
+          let tag: string | undefined
+          if (res.status >= 300 && res.status < 400) {
+            tag = res.headers.get("location")?.split("/").pop()?.trim()
+          }
+          if (!tag) {
+            const apiRes = await fetch("https://api.github.com/repos/cfuser0x11/deepcode-tui/releases/latest", {
+              headers: { "User-Agent": "deepcode-tui", Accept: "application/vnd.github.v3+json" },
+              signal,
+            })
+            if (apiRes.ok) {
+              const data = (await apiRes.json()) as { tag_name?: string }
+              tag = data.tag_name?.trim()
+            }
+          }
+          if (tag) {
+            setState({ type: "available", version: tag })
+            return undefined
+          }
+          return "Could not fetch release information from GitHub."
+        } catch (error) {
+          return errorMessage(error)
+        }
+      }
       const result = await updater
         .check(signal, (version) => {
           if (!signal.aborted) setState({ type: "installing", version })
@@ -94,7 +133,6 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
     }
 
     const open = (origin: "manual" | "notification") => {
-      if (!props.updater) return
       const current = notification()
       const known = current && (current.source === "client" || !current.remote) ? current : undefined
       if (origin === "notification" && !known) return
@@ -110,6 +148,7 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
           skip={dismiss}
           install={install}
           restart={restart}
+          autoInstall={origin === "manual"}
         />
       ))
     }
@@ -143,7 +182,7 @@ export const { use: useUpdateNotification, provider: UpdateNotificationProvider 
     return {
       notification,
       dismiss,
-      open: props.updater ? open : undefined,
+      open,
     }
   },
 })
