@@ -100,13 +100,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || inputs.create_release == true
+      - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           files: build/*
-          name: ${{ inputs.version || github.ref_name }}
-          tag_name: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || (inputs.version && format('v{0}', inputs.version)) || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || (inputs.version && format('DeepCode v{0}', inputs.version)) || 'DeepCode Latest Build' }}
           draft: false
           prerelease: false
           generate_release_notes: true
