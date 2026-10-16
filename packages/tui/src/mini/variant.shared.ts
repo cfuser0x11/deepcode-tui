@@ -24,7 +24,7 @@ export function formatModelLabel(
   providers?: RunProvider[],
 ): string {
   const names = modelInfo(providers, model)
-  const label = variant ? ` · ${variant}` : ""
+  const label = variant && variant !== "none" && variant !== "default" ? ` · ${variant}` : ""
   return `${names.model} · ${names.provider}${label}`
 }
 

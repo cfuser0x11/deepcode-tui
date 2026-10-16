@@ -27,6 +27,7 @@ import { isRecord, JsonObject, optionalArray, optionalNull, ProviderShared } fro
 import { OpenAIOptions } from "./utils/openai-options.js"
 import { Lifecycle } from "./utils/lifecycle.js"
 import { ToolStream } from "./utils/tool-stream.js"
+import { findToolBlockStart, hasCompleteToolBlock, isPartialToolTag, parseDSMLAndXML, stripToolTags } from "./utils/dsml-parser.js"
 
 const ADAPTER = "openai-chat"
 const RESERVED_REASONING_FIELDS = new Set(["role", "content", "refusal", "tool_calls"])
@@ -315,6 +316,8 @@ export interface ParserState {
   readonly latestToolIndex?: number
   readonly nextToolIndex: number
   readonly requireFinishReason: boolean
+  readonly pendingContent?: string
+  readonly emittedToolIds?: readonly string[]
 }
 
 // =============================================================================
@@ -527,12 +530,27 @@ const lowerToolMessages = Effect.fnUntraced(function* (
   return { messages, attachments }
 })
 
+const MAX_TOOL_CHARS = 120_000
+const safeToolText = (raw: string) => {
+  if (raw.length <= MAX_TOOL_CHARS) return raw
+  return (
+    raw.slice(0, 80_000) +
+    "\n...[tool output truncated to stay within provider message limit]...\n" +
+    raw.slice(-20_000)
+  )
+}
+
 // Chat cache breakpoints belong on text content parts, not on the message itself.
-const toolMessage = (toolCallID: string, text: string, cacheControl: OpenAIChatCacheControl | undefined) => ({
-  role: "tool" as const,
-  tool_call_id: toolCallID,
-  content: cacheControl === undefined ? text : [{ type: "text" as const, text, cache_control: cacheControl }],
-})
+const toolMessage = (toolCallID: string, text: string, cacheControl: OpenAIChatCacheControl | undefined) => {
+  const bounded = safeToolText(text)
+  return {
+    role: "tool" as const,
+    tool_call_id: toolCallID,
+    content: cacheControl === undefined ? bounded : [{ type: "text" as const, text: bounded, cache_control: cacheControl }],
+  }
+}
+
+const CHUNK_USER_SIZE = 100_000
 
 const lowerMessage = Effect.fnUntraced(function* (
   message: OpenAIChatRequestMessage,
@@ -540,7 +558,33 @@ const lowerMessage = Effect.fnUntraced(function* (
   requireReasoning: boolean,
   options: LoweringOptions & { readonly providerMetadataKey: string },
 ) {
-  if (message.role === "user") return [yield* lowerUserMessage(message, options)]
+  if (message.role === "user") {
+    const lowered = yield* lowerUserMessage(message, options)
+    if (typeof lowered.content === "string" && lowered.content.length > CHUNK_USER_SIZE) {
+      const text = lowered.content
+      const chunked: OpenAIChatMessage[] = []
+      const totalParts = Math.ceil(text.length / CHUNK_USER_SIZE)
+      let offset = 0
+      let partIdx = 1
+      while (offset < text.length) {
+        const slice = text.slice(offset, offset + CHUNK_USER_SIZE)
+        chunked.push({
+          role: "user",
+          content: totalParts > 1 ? `[PART ${partIdx}/${totalParts}]:\n${slice}` : slice,
+        })
+        if (partIdx < totalParts) {
+          chunked.push({
+            role: "assistant",
+            content: `Part ${partIdx}/${totalParts} received.`,
+          })
+        }
+        offset += CHUNK_USER_SIZE
+        partIdx++
+      }
+      return chunked
+    }
+    return [lowered]
+  }
   if (message.role === "assistant") {
     const lowered = yield* lowerAssistantMessage(message, reasoningField, requireReasoning, options)
     return [options.assistant?.(message, lowered) ?? lowered]
@@ -1117,7 +1161,55 @@ const step = (state: ParserState, event: OpenAIChatEvent) =>
     // Reasoning is one response-wide channel: it stays open alongside text and
     // refusal output so late reasoning deltas and details join the same block,
     // and `finishEvents` closes it once with the complete metadata.
-    if (delta?.content) lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", delta.content)
+    let pendingContent = state.pendingContent ?? ""
+    const syntheticToolCalls: LLMEvent[] = []
+    if (delta?.content) {
+      pendingContent += delta.content
+      const blockStart = findToolBlockStart(pendingContent)
+      if (blockStart === -1) {
+        if (isPartialToolTag(pendingContent)) {
+          const lastLt = pendingContent.lastIndexOf("<")
+          if (lastLt !== -1) {
+            const toEmit = stripToolTags(pendingContent.slice(0, lastLt))
+            if (toEmit) lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", toEmit)
+            pendingContent = pendingContent.slice(lastLt)
+          } else {
+            const m = /(?:(?:\[\s*)?(?:Assistant\s*:?\s*)?(?:Tool|Action|(?:tool\s+)?(?:call|action))\b|(?:const|let|var|await|tools)\b)[^<]*$/i.exec(pendingContent)
+            const splitIdx = m ? m.index : 0
+            const toEmit = stripToolTags(pendingContent.slice(0, splitIdx))
+            if (toEmit) lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", toEmit)
+            pendingContent = pendingContent.slice(splitIdx)
+          }
+        } else {
+          const toEmit = stripToolTags(pendingContent)
+          if (toEmit) lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", toEmit)
+          pendingContent = ""
+        }
+      } else {
+        const before = stripToolTags(pendingContent.slice(0, blockStart))
+        if (before) {
+          lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", before)
+        }
+        pendingContent = pendingContent.slice(blockStart)
+        const hasCloseTag = hasCompleteToolBlock(pendingContent)
+        if (hasCloseTag) {
+          const parsed = parseDSMLAndXML(pendingContent)
+          if (parsed.toolCalls.length > 0) {
+            for (const call of parsed.toolCalls) {
+              const toolCallEvent = LLMEvent.toolCall({
+                id: call.id,
+                name: call.name,
+                input: call.input,
+              })
+              syntheticToolCalls.push(toolCallEvent)
+            }
+            lifecycle = Lifecycle.stepStart(lifecycle, events)
+            events.push(...syntheticToolCalls)
+            pendingContent = parsed.cleanText
+          }
+        }
+      }
+    }
 
     if (delta?.refusal) lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", delta.refusal)
 
@@ -1196,12 +1288,18 @@ const step = (state: ParserState, event: OpenAIChatEvent) =>
         ? yield* ToolStream.finishAll(ADAPTER, tools)
         : undefined
 
+    const mergedToolCallEvents = finished?.events ?? (syntheticToolCalls.length ? [...state.toolCallEvents, ...syntheticToolCalls] : state.toolCallEvents)
+    const emittedToolIds = [
+      ...(state.emittedToolIds ?? []),
+      ...syntheticToolCalls.map((t) => ("id" in t && typeof t.id === "string" ? t.id : "")).filter(Boolean),
+    ]
+
     return [
       {
         providerMetadataKey: state.providerMetadataKey,
         tools: finished?.tools ?? tools,
         pendingTools,
-        toolCallEvents: finished?.events ?? state.toolCallEvents,
+        toolCallEvents: mergedToolCallEvents,
         usage,
         finishReason,
         lifecycle,
@@ -1213,13 +1311,47 @@ const step = (state: ParserState, event: OpenAIChatEvent) =>
         latestToolIndex,
         nextToolIndex,
         requireFinishReason: state.requireFinishReason,
+        pendingContent,
+        emittedToolIds,
       },
       events,
     ] as const
   })
 
 export const finishEvents = Effect.fnUntraced(function* (state: ParserState) {
-  if (state.finishReason === undefined && state.requireFinishReason)
+  const events: LLMEvent[] = []
+  let lifecycle = state.lifecycle
+  const toolCallEvents = [...state.toolCallEvents]
+
+  const pendingContent = state.pendingContent ?? ""
+  if (pendingContent.trim()) {
+    const parsed = parseDSMLAndXML(pendingContent)
+    if (parsed.toolCalls.length > 0) {
+      for (const call of parsed.toolCalls) {
+        if (!toolCallEvents.some((e) => "id" in e && e.id === call.id)) {
+          const toolCallEvent = LLMEvent.toolCall({
+            id: call.id,
+            name: call.name,
+            input: call.input,
+          })
+          toolCallEvents.push(toolCallEvent)
+        }
+      }
+    }
+    const cleanRemaining = stripToolTags(parsed.cleanText)
+    if (cleanRemaining.trim()) {
+      lifecycle = Lifecycle.textDelta(lifecycle, events, "text-0", cleanRemaining)
+    }
+  }
+
+  const standardToolEvents =
+    state.finishReason === undefined && Object.keys(state.tools).length > 0
+      ? (yield* ToolStream.finishAll(ADAPTER, state.tools)).events
+      : []
+  const activeToolCallEvents = [...toolCallEvents, ...standardToolEvents]
+  const hasToolCalls = activeToolCallEvents.length > 0
+
+  if (state.finishReason === undefined && state.requireFinishReason && !hasToolCalls)
     return yield* new AIError({
       reason: new InvalidProviderOutputError({
         message: "OpenAI Chat stream ended without finish_reason",
@@ -1227,17 +1359,14 @@ export const finishEvents = Effect.fnUntraced(function* (state: ParserState) {
         route: ADAPTER,
       }),
     })
-  const events: LLMEvent[] = []
-  const toolCallEvents =
-    state.finishReason === undefined && Object.keys(state.tools).length > 0
-      ? (yield* ToolStream.finishAll(ADAPTER, state.tools)).events
-      : state.toolCallEvents
-  const hasToolCalls = toolCallEvents.length > 0
+
   const reason = state.finishReason
     ? {
         ...state.finishReason,
         normalized:
-          state.finishReason.normalized === "stop" && hasToolCalls ? "tool-calls" : state.finishReason.normalized,
+          (state.finishReason.normalized === "stop" || !state.finishReason.normalized) && hasToolCalls
+            ? ("tool-calls" as const)
+            : state.finishReason.normalized,
       }
     : { normalized: hasToolCalls ? ("tool-calls" as const) : ("stop" as const) }
   // Snapshot details at publish time so the emitted event never observes later
@@ -1250,16 +1379,21 @@ export const finishEvents = Effect.fnUntraced(function* (state: ParserState) {
   const started =
     state.reasoningDetailsObserved && !state.reasoningEmitted
       ? Lifecycle.reasoningStart(
-          state.lifecycle,
+          lifecycle,
           events,
           "reasoning-0",
           reasoningMetadata(state.providerMetadataKey, state.reasoningField),
         )
-      : state.lifecycle
+      : lifecycle
   const ended = Lifecycle.reasoningEnd(started, events, "reasoning-0", metadata)
-  const lifecycle = toolCallEvents.length ? Lifecycle.stepStart(ended, events) : ended
-  events.push(...toolCallEvents)
-  Lifecycle.finish(lifecycle, events, { reason, usage: state.usage })
+  const alreadyEmitted = new Set(state.emittedToolIds ?? [])
+  const unEmittedTools = activeToolCallEvents.filter((call) => {
+    const id = "id" in call && typeof call.id === "string" ? call.id : undefined
+    return !id || !alreadyEmitted.has(id)
+  })
+  const finalLifecycle = unEmittedTools.length ? Lifecycle.stepStart(ended, events) : ended
+  events.push(...unEmittedTools)
+  Lifecycle.finish(finalLifecycle, events, { reason, usage: state.usage })
   return events
 })
 
@@ -1293,6 +1427,7 @@ export const protocol = Protocol.make({
       reasoningEmitted: false,
       nextToolIndex: 0,
       requireFinishReason: request.model.compatibility?.requireFinishReason ?? true,
+      pendingContent: "",
     }),
     step: (state: ParserState, event) => (event === DONE ? Effect.succeed([state, []] as const) : step(state, event)),
     terminal: (event) => event === DONE,

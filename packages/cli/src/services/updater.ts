@@ -46,7 +46,7 @@ const decodeVpPackages = Schema.decodeUnknownOption(
 )
 
 const installNames: Record<Method, string> = {
-  curl: "The OpenCode installer",
+  curl: "The DeepCode installer",
   npm: "npm",
   pnpm: "pnpm",
   bun: "Bun",
@@ -157,7 +157,7 @@ const make = Effect.gen(function* () {
     return values.findLast((value) => value !== undefined) ?? "notify"
   })
 
-  const exec = Effect.fnUntraced(function* (command: string[], timeout: Duration.Input = "30 seconds") {
+  const exec = Effect.fnUntraced(function* (command: string[], timeout: Duration.Input = "10 seconds") {
     return yield* appProcess
       .run(ChildProcess.make(command[0], command.slice(1)), {
         timeout,
@@ -173,13 +173,12 @@ const make = Effect.gen(function* () {
       )
   })
 
-  const curlPath = path.resolve(
+  const curlBinary = path.resolve(
     global.home,
     ".opencode",
     "bin",
     process.platform === "win32" ? "opencode.exe" : "opencode",
   )
-  const curlBinary = yield* fs.realPath(curlPath).pipe(Effect.orElseSucceed(() => curlPath))
 
   // On Windows a bare `bash` may be the WSL launcher, which cannot run the installer against Windows paths.
   const installerBash = Effect.fnUntraced(function* () {
@@ -190,27 +189,25 @@ const make = Effect.gen(function* () {
     if (bash && (yield* fs.exists(bash).pipe(Effect.orElseSucceed(() => false)))) return bash
     return yield* Effect.fail(
       new UpgradeError({
-        title: "Git Bash is required to update OpenCode",
-        detail: "The OpenCode installer runs with Git Bash on Windows, and it was not found.",
-        retry: "Install Git for Windows or set OPENCODE_GIT_BASH_PATH, then run opencode upgrade again.",
+        title: "Git Bash is required to update DeepCode",
+        detail: "The DeepCode installer runs with Git Bash on Windows, and it was not found.",
+        retry: "Install Git for Windows or set OPENCODE_GIT_BASH_PATH, then run deepcode upgrade again.",
       }),
     )
   })
 
   const method = Effect.fnUntraced(function* () {
-    if (executable === curlBinary) return "curl"
+    if (path.resolve(process.execPath) === curlBinary) return "curl"
     if (installedFormula) return "brew"
     if (!installedPackage) return
 
-    const parts = executable.toLowerCase().split(path.sep).map((part) => part.replace(/^\./, ""))
-    const checks: Array<{ method: Method; command: string[] }> = [
+    const checks: ReadonlyArray<{ method: Method; command: string[] }> = [
       { method: "npm", command: ["npm", "list", "-g", "--depth=0", installedPackage] },
       { method: "pnpm", command: ["pnpm", "list", "-g", "--depth=0", installedPackage] },
       { method: "bun", command: ["bun", "pm", "ls", "-g"] },
       { method: "yarn", command: ["yarn", "global", "list"] },
       { method: "vp", command: ["vp", "list", "-g", "--json", installedPackage] },
     ]
-    checks.sort((a, b) => Number(parts.includes(b.method)) - Number(parts.includes(a.method)))
     const results = yield* Effect.forEach(
       checks,
       (check) =>
@@ -251,69 +248,11 @@ const make = Effect.gen(function* () {
     }
   }
 
-  const release = Effect.fnUntraced(function* (method?: Method) {
-    const distribution = method === "brew" ? "homebrew" : "npm"
-    // Homebrew Core builds its formula on its own schedule, so the tap release does not describe it.
-    const core = method === "brew" && installedFormula === "opencode"
-    const response = yield* Effect.tryPromise({
-      try: (signal) =>
-        fetch(
-          core
-            ? "https://formulae.brew.sh/api/formula/opencode.json"
-            : `https://opencode.ai/update/api/${encodeURIComponent(channel)}/${encodeURIComponent(OPENCODE_ARTIFACT)}/${distribution}?current=${encodeURIComponent(OPENCODE_VERSION)}`,
-          {
-            signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
-          },
-        ),
-      catch: (cause) =>
-        new UpgradeError(
-          {
-            title: "Could not check for OpenCode updates",
-            detail: errorDetail(cause),
-            retry: "Check your network, then run opencode upgrade again.",
-          },
-          { cause },
-        ),
-    })
-    if (!response.ok)
-      return yield* Effect.fail(
-        new UpgradeError({
-          title: "Could not check for OpenCode updates",
-          detail: `The update service returned HTTP ${response.status}.`,
-          retry: "Try again in a few minutes.",
-        }),
-      )
-    const data: { version?: string; metadata?: { package?: string }; versions?: { stable?: string } } =
-      yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: (cause) =>
-          new UpgradeError(
-            {
-              title: "Could not read the OpenCode update information",
-              detail: errorDetail(cause),
-              retry: "Try again in a few minutes.",
-            },
-            { cause },
-          ),
-      })
-    const version = core ? data.versions?.stable : data.version
-    const packageName = core ? "opencode" : data.metadata?.package
-    if (!version || !packageName)
-      return yield* Effect.fail(
-        new UpgradeError({
-          title: "Could not read the OpenCode update information",
-          detail: "The update service returned incomplete release information.",
-          retry: "Try again in a few minutes.",
-        }),
-      )
-    return { package: packageName, version }
+  const release = Effect.fnUntraced(function* (_method?: Method) {
+    return { package: "deepcode", version: OPENCODE_VERSION }
   })
 
-  const latest = (selected?: Method) =>
-    (selected ? Effect.succeed(selected) : method()).pipe(
-      Effect.flatMap(release),
-      Effect.map((data) => data.version),
-    )
+  const latest = (_selected?: Method) => Effect.succeed(OPENCODE_VERSION)
 
   const temporaryDirectory = (prefix: string) =>
     Effect.acquireRelease(fs.makeTempDirectory({ directory: global.cache, prefix }), (directory) =>
@@ -326,7 +265,7 @@ const make = Effect.gen(function* () {
   const retaining = <A, E, R>(method: Method, effect: Effect.Effect<A, E, R>, directory = global.cache) => {
     if (process.platform !== "win32" || method === "brew") return effect
     // Only the installed binary is at stake; source checkouts run inside bun or node.
-    const owned = method === "curl" ? executable === curlBinary : installedPackage !== undefined
+    const owned = method === "curl" ? path.resolve(process.execPath) === curlBinary : installedPackage !== undefined
     if (!owned) return effect
     return Effect.scoped(RetainedImage.retain(directory, "upgrade").pipe(Effect.andThen(effect))).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -343,10 +282,10 @@ const make = Effect.gen(function* () {
     const failure = (detail: string, cause?: unknown) =>
       new UpgradeError(
         {
-          title: input.title ?? `${installNames[input.method]} could not install OpenCode`,
+          title: input.title ?? `${installNames[input.method]} could not install DeepCode`,
           detail,
           command: (input.displayCommand ?? input.command).join(" "),
-          retry: input.retry ?? "Fix the issue above, then run opencode upgrade again.",
+          retry: input.retry ?? "Fix the issue above, then run deepcode upgrade again.",
         },
         cause === undefined ? undefined : { cause },
       )
@@ -422,16 +361,16 @@ const make = Effect.gen(function* () {
             method,
             command: ["curl", "-fsSL", "-o", installer, "https://opencode.ai/v2/install"],
             displayCommand: ["curl", "-fsSL", "https://opencode.ai/v2/install"],
-            title: "Could not download the OpenCode installer",
-            retry: "Check your network, then run opencode upgrade again.",
+            title: "Could not download the DeepCode installer",
+            retry: "Check your network, then run deepcode upgrade again.",
           })
           return yield* retaining(
             method,
             runUpgrade({
               method,
               command: [bash, installer, "--version", version, "--no-modify-path"],
-              displayCommand: ["opencode", "upgrade", version, "--method", "curl"],
-              title: "The OpenCode installer failed",
+              displayCommand: ["deepcode", "upgrade", version, "--method", "curl"],
+              title: "The DeepCode installer failed",
             }),
           )
         }
@@ -444,9 +383,9 @@ const make = Effect.gen(function* () {
           ? cause
           : new UpgradeError(
               {
-                title: "Could not prepare the OpenCode upgrade",
+                title: "Could not prepare the DeepCode upgrade",
                 detail: errorDetail(cause),
-                retry: "Fix the issue above, then run opencode upgrade again.",
+                retry: "Fix the issue above, then run deepcode upgrade again.",
               },
               { cause },
             ),
@@ -456,90 +395,27 @@ const make = Effect.gen(function* () {
   })
 
   const inspect = Effect.fnUntraced(function* () {
-    if (OPENCODE_LOCAL || ["1", "true"].includes(process.env.OPENCODE_DISABLE_AUTOUPDATE?.toLowerCase() ?? "")) {
-      yield* Effect.logInfo("update check skipped", {
-        reason: OPENCODE_LOCAL ? "local-install" : "disabled",
-        version: OPENCODE_VERSION,
-        channel: OPENCODE_CHANNEL,
-      })
-      return undefined
-    }
-    const policy = yield* readPolicy()
-    if (policy === "disable") {
-      yield* Effect.logInfo("update check skipped", { reason: "policy-disabled" })
-      return undefined
-    }
-
-    const current = yield* Ref.get(installedVersion)
-    const version = yield* latest()
-    yield* Effect.logInfo("update check", {
-      current,
-      latest: version,
-    })
-    const next = action(current, version, policy)
-    if (next === "none") {
-      yield* Effect.logInfo("update check done", { action: "up-to-date" })
-      return undefined
-    }
-    yield* Effect.logInfo("OpenCode update available", { current, latest: version, action: next })
-    return { policy, version }
+    return undefined
   })
 
-  const install = Effect.fnUntraced(function* (version: string) {
-    const detected = yield* method()
-    if (!detected) {
-      yield* Effect.logWarning("update skipped: installation method not found")
-      return false
-    }
-    const current = yield* Ref.get(installedVersion)
-    yield* upgrade(detected, version)
-    yield* Ref.set(installedVersion, version)
-    yield* Effect.logInfo("updated OpenCode", { from: current, to: version, method: detected })
-    return true
+  const install = Effect.fnUntraced(function* (_version: string) {
+    return false
   })
 
-  const apply = Effect.fn("cli.updater.apply")(function* (version: string) {
-    if (!(yield* install(version)))
-      return yield* Effect.fail(
-        new Error(
-          "Could not detect the installation method. Update with your package manager or download the latest release.",
-        ),
-      )
+  const apply = Effect.fn("cli.updater.apply")(function* (_version: string) {
+    return
   })
 
   const check = Effect.fn("cli.updater.check")(function* () {
-    if (OPENCODE_LOCAL)
-      return {
-        type: "unavailable" as const,
-        message: "This build runs from a source checkout. Use an installed OpenCode release to check for updates.",
-      }
-    const detected = yield* method()
-    if (!detected)
-      return {
-        type: "unavailable" as const,
-        message:
-          "Could not detect the installation method. Update with your package manager or download the latest release.",
-      }
-    const version = yield* latest(detected)
-    if (!parseReleaseVersion(version)) return yield* Effect.fail(new Error(`Invalid version: ${version}`))
-    const current = yield* Ref.get(installedVersion)
-    if (action(current, version, "auto") === "none") {
-      // An earlier check may have installed the update while this client is still running.
-      return action(OPENCODE_VERSION, current, "auto") === "none"
-        ? undefined
-        : { type: "installed" as const, version: current }
+    return {
+      type: "unavailable" as const,
+      message: "Updates are disabled in this standalone build.",
     }
-    return { type: "available" as const, version }
   })
 
   const run = Effect.fn("cli.updater.run")(
-    function* (onInstall: (version: string) => void = () => {}) {
-      const result = yield* inspect()
-      if (!result) return undefined
-      if (result.policy === "notify") return { type: "available" as const, version: result.version }
-      onInstall(result.version)
-      if (!(yield* install(result.version))) return yield* Effect.fail(new Error("Installation method not found"))
-      return { type: "installed" as const, version: result.version }
+    function* () {
+      return undefined
     },
     Effect.catch((error) => Effect.logWarning("update check failed", { error }).pipe(Effect.as(undefined))),
   )

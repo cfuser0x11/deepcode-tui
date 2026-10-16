@@ -1,7 +1,12 @@
 import { RGBA, TextAttributes } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
-import { createMemo, Show } from "solid-js"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { createMemo, createSignal, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
+import { useDeadMode } from "../../context/dead-mode"
+import { useDialog } from "../../ui/dialog"
+import { DialogModel } from "../dialog-model"
+import { DialogVariant } from "../dialog-variant"
+import { DialogAgent } from "../dialog-agent"
 import { Locale } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
 
@@ -19,7 +24,30 @@ export function PromptMetadataRow(props: {
   variantAlpha: number
 }) {
   const theme = useTheme()
+  const deadMode = useDeadMode()
   const dimensions = useTerminalDimensions()
+  const dialog = useDialog()
+  const renderer = useRenderer()
+
+  const [agentHovered, setAgentHovered] = createSignal(false)
+  const [modelHovered, setModelHovered] = createSignal(false)
+  const [variantHovered, setVariantHovered] = createSignal(false)
+
+  function openAgent() {
+    if (renderer.getSelection()?.getSelectedText()) return
+    dialog.replace(() => <DialogAgent />)
+  }
+
+  function openModel() {
+    if (renderer.getSelection()?.getSelectedText()) return
+    dialog.replace(() => <DialogModel />)
+  }
+
+  function openVariant() {
+    if (renderer.getSelection()?.getSelectedText()) return
+    dialog.replace(() => <DialogVariant />)
+  }
+
   const layout = createMemo(() => {
     if (props.mode === "shell") return { agent: props.agent ?? "Shell", model: "" }
     return promptMetadataLayout({
@@ -40,7 +68,17 @@ export function PromptMetadataRow(props: {
         fallback={<box height={1} />}
       >
         <Show when={layout().agent}>
-          {(agent) => <text fg={fade(props.highlight, props.agentAlpha)}>{agent()}</text>}
+          {(agent) => (
+            <text
+              fg={fade(agentHovered() ? theme.text.base : props.highlight, props.agentAlpha)}
+              attributes={agentHovered() ? TextAttributes.UNDERLINE : undefined}
+              onMouseOver={() => setAgentHovered(true)}
+              onMouseOut={() => setAgentHovered(false)}
+              onMouseUp={openAgent}
+            >
+              {agent()}
+            </text>
+          )}
         </Show>
         <Show when={props.mode === "normal" && layout().auto}>
           <text fg={fade(theme.text.muted, props.agentAlpha)}>auto</text>
@@ -50,34 +88,61 @@ export function PromptMetadataRow(props: {
             <Show when={layout().agent}>
               <text fg={fade(theme.text.muted, props.modelAlpha)}>·</text>
             </Show>
-            <text
+            <box
+              flexDirection="row"
+              gap={1}
               flexShrink={1}
               minWidth={0}
-              wrapMode="none"
-              truncate
-              fg={fade(props.muted ? theme.text.muted : theme.text.base, props.modelAlpha)}
+              onMouseOver={() => setModelHovered(true)}
+              onMouseOut={() => setModelHovered(false)}
+              onMouseUp={openModel}
             >
-              {layout().model}
-            </text>
-            <Show when={layout().provider}>
-              {(provider) => (
-                <text flexShrink={0} fg={fade(theme.text.muted, props.modelAlpha)}>
-                  {provider()}
-                </text>
-              )}
-            </Show>
+              <text
+                flexShrink={1}
+                minWidth={0}
+                wrapMode="none"
+                truncate
+                fg={fade(modelHovered() ? theme.text.base : props.muted ? theme.text.muted : theme.text.base, props.modelAlpha)}
+                attributes={modelHovered() ? TextAttributes.UNDERLINE : undefined}
+              >
+                {layout().model}
+              </text>
+              <Show when={layout().provider}>
+                {(provider) => (
+                  <text
+                    flexShrink={0}
+                    fg={fade(modelHovered() ? theme.text.base : theme.text.muted, props.modelAlpha)}
+                    attributes={modelHovered() ? TextAttributes.UNDERLINE : undefined}
+                  >
+                    {provider()}
+                  </text>
+                )}
+              </Show>
+            </box>
             <Show when={layout().variant}>
               {(variant) => (
                 <>
                   <text fg={fade(theme.text.muted, props.variantAlpha)}>·</text>
                   <text
                     fg={fade(theme.text.feedback.warning.base, props.variantAlpha)}
-                    attributes={TextAttributes.BOLD}
+                    attributes={TextAttributes.BOLD | (variantHovered() ? TextAttributes.UNDERLINE : 0)}
+                    onMouseOver={() => setVariantHovered(true)}
+                    onMouseOut={() => setVariantHovered(false)}
+                    onMouseUp={openVariant}
                   >
                     {variant()}
                   </text>
                 </>
               )}
+            </Show>
+            <Show when={deadMode.get()}>
+              <text fg={fade(theme.text.muted, props.modelAlpha)}>·</text>
+              <text
+                fg={fade(theme.text.feedback.warning.base, props.modelAlpha)}
+                attributes={TextAttributes.BOLD}
+              >
+                dead mode
+              </text>
             </Show>
           </box>
         </Show>
@@ -109,29 +174,33 @@ function promptMetadataLayout(input: {
 }) {
   const agent = input.terminalWidth < 44 ? undefined : input.agent
   const provider = input.terminalWidth < 44 ? "" : input.provider
+  const variant =
+    input.variant && input.variant !== "none" && input.variant !== "default"
+      ? input.variant
+      : undefined
   const candidates: Layout[] = [
-    { agent, auto: input.auto, model: input.model, provider, variant: input.variant },
-    { agent, model: input.model, provider, variant: input.variant },
+    { agent, auto: input.auto, model: input.model, provider, variant },
+    { agent, model: input.model, provider, variant },
     {
       agent,
       model: input.model,
       provider: provider.split(" / ").at(-1) ?? provider,
-      variant: input.variant,
+      variant,
     },
-    { agent, model: input.model, variant: input.variant },
+    { agent, model: input.model, variant },
   ]
   const fit = candidates.find((candidate) => stringWidth(text(candidate)) <= input.width)
   if (fit) return fit
 
   const prefix = agent ? `${agent} · ` : ""
-  const suffix = input.variant ? ` · ${input.variant}` : ""
+  const suffix = variant ? ` · ${variant}` : ""
   return {
     agent,
     model: Locale.truncateWidth(
       input.model,
       Math.max(9, input.width - stringWidth(prefix) - stringWidth(suffix)),
     ).replace(/\s+…$/, "…"),
-    variant: input.variant,
+    variant,
   }
 }
 

@@ -42,7 +42,6 @@ import {
   type TuiApp,
 } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
-import { DialogIntegration } from "./component/dialog-integration"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { EditorContextProvider } from "./context/editor"
@@ -91,6 +90,7 @@ import { newSessionLocation } from "./config/new-session-location"
 import { UpdateNotificationProvider, useUpdateNotification, type UpdateSource } from "./context/update-notification"
 import { PluginProvider, usePlugin, type PackageSource } from "./plugin/context"
 import { localPluginDirectories } from "./plugin/discovery"
+import { useDeadMode } from "./context/dead-mode"
 import { PluginRoute, Slot } from "./plugin/render"
 import { CommandPaletteDialog } from "./component/command-palette"
 import { COMMAND_PALETTE_COMMAND, Keymap, type KeymapCommand } from "./context/keymap"
@@ -288,7 +288,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
       )
       renderer.once("destroy", () => shutdown.openUnsafe())
       yield* Effect.tryPromise(async () => {
-        const mode = handoff?.mode ?? (await renderer.waitForThemeMode(1000)) ?? "dark"
+        const mode =
+          handoff?.mode ??
+          (process.platform === "win32" ? "dark" : (await renderer.waitForThemeMode(500)) ?? "dark")
         if (renderer.isDestroyed) return
 
         await render(() => {
@@ -602,23 +604,23 @@ function App() {
     if (!terminalTitleEnabled()) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
+      renderer.setTerminalTitle("DeepCode")
       return
     }
 
     if (route.data.type === "session") {
       const title = session?.title
       if (!title || isFallbackTitle(title)) {
-        renderer.setTerminalTitle("OpenCode")
+        renderer.setTerminalTitle("DeepCode")
         return
       }
 
-      renderer.setTerminalTitle(`OC | ${title.length > 40 ? title.slice(0, 37) + "…" : title}`)
+      renderer.setTerminalTitle(`DC | ${title.length > 40 ? title.slice(0, 37) + "…" : title}`)
       return
     }
 
     if (route.data.type === "plugin") {
-      renderer.setTerminalTitle(`OC | ${route.data.name}`)
+      renderer.setTerminalTitle(`DC | ${route.data.name}`)
     }
   })
 
@@ -686,6 +688,7 @@ function App() {
   })
 
   const connected = useConnected()
+  const deadMode = useDeadMode()
   const appCommands = createMemo(() =>
     [
       {
@@ -922,7 +925,7 @@ function App() {
         title: "Switch model variant",
         category: "Agent",
         palette: local.model.variant.list().length === 0 ? undefined : (true as const),
-        slash: { name: "variants", aliases: ["thinking", "effort"] },
+        slash: { name: "thinking" },
         run: () => {
           if (local.model.variant.list().length === 0) {
             return toast.show({
@@ -943,19 +946,33 @@ function App() {
           local.agent.move(-1)
         },
       },
+
       {
-        name: "provider.connect",
-        title: "Connect an integration",
-        suggested: !connected(),
-        slash: { name: "connect" },
+        name: "deepcode.dead",
+        title: "Toggle Dead Mode",
+        category: "Session",
+        slash: { name: "dead" },
         run: () => {
-          dialog.replace(() => (
-            <DialogIntegration
-              onConnected={(providerID) => dialog.replace(() => <DialogModel providerID={providerID} />)}
-            />
-          ))
+          const active = deadMode.toggle()
+          toast.show({
+            message: active ? "Dead Mode active: Ask anything, I SAW ANYTHING" : "Dead Mode deactivated",
+            variant: "info",
+          })
+          dialog.clear()
         },
-        category: "Integration",
+      },
+      {
+        name: "deepcode.setup",
+        title: "Setup DeepSeek API",
+        category: "Session",
+        slash: { name: "setup" },
+        run: () => {
+          toast.show({
+            message: "Run 'deepcode setup' in terminal or set DEEPSEEK_API_KEY environment variable",
+            variant: "info",
+          })
+          dialog.clear()
+        },
       },
       {
         name: "opencode.settings",

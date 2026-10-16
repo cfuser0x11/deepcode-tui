@@ -39,13 +39,14 @@ export default $config({
     const stage = await import("./infra/stage.js")
     await import("./infra/app.js")
     const stats = stage.deployAws ? await import("./infra/stats.js") : undefined
-    await import("./infra/console.js")
+    const { stat } = await import("./infra/console.js")
     await import("./infra/enterprise.js")
     if ($app.stage === "production" || $app.stage === "vimtor") {
       await import("./infra/monitoring.js")
     }
 
     return {
+      StatWorkerUrl: stat.url,
       ...(stats ? { StatsUrl: stats.app.url } : {}),
       AwsStage: stage.awsStage,
     }

@@ -21,10 +21,20 @@ export const register = Effect.fnUntraced(function* (options: {
   const fs = yield* FileSystem.FileSystem
   const temp = options.file + "." + options.id + ".tmp"
   yield* fs.makeDirectory(path.dirname(options.file), { recursive: true })
+  const addressUrl = HttpServer.formatAddress(options.address)
+  let url = addressUrl
+  try {
+    const parsed = new URL(addressUrl)
+    if (parsed.hostname === "0.0.0.0") {
+      url = `${parsed.protocol}//127.0.0.1:${parsed.port}`
+    } else if (parsed.hostname === "::" || parsed.hostname === "[::]") {
+      url = `${parsed.protocol}//[::1]:${parsed.port}`
+    }
+  } catch {}
   const info = {
     id: options.id,
     version: OPENCODE_VERSION,
-    url: HttpServer.formatAddress(options.address),
+    url,
     pid: process.pid,
     password: options.password,
   }

@@ -21,7 +21,12 @@ export function DialogVariant() {
       .filter((variant) => variant !== "default")
       .map((variant) => ({
         value: variant,
-        title: variant,
+        title:
+          variant === "none"
+            ? "Thinking OFF (none)"
+            : variant === "thinking"
+              ? "Thinking ON (thinking)"
+              : variant,
         onSelect: () => {
           dialog.clear()
           local.model.variant.set(variant)

@@ -17,8 +17,8 @@ function wordmark(pad = "") {
       .join("")
 
   return logo.left.map((line, index) => {
-    const left = draw(line, dim, "\x1b[38;5;235m", "\x1b[48;5;235m")
-    const right = draw(logo.right[index] ?? "", reset, "\x1b[38;5;238m", "\x1b[48;5;238m")
+    const left = draw(line, "\x1b[38;2;59;130;246m", "\x1b[38;2;29;78;216m", "\x1b[48;2;15;23;42m")
+    const right = draw(logo.right[index] ?? "", "\x1b[38;2;160;160;160m", "\x1b[38;2;75;75;75m", "\x1b[48;2;30;30;30m")
     return `${pad}${left} ${right}`
   })
 }
@@ -29,7 +29,7 @@ export function sessionEpilogue(input: { title: string; sessionID?: string }) {
     ...wordmark("  "),
     "",
     `  ${weak("Session")}${bold}${input.title}${reset}`,
-    `  ${weak("Continue")}${bold}opencode -s ${input.sessionID}${reset}`,
+    `  ${weak("Continue")}${bold}deepcode -s ${input.sessionID}${reset}`,
     "",
   ].join("\n")
 }

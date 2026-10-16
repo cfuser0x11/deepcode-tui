@@ -22,11 +22,24 @@ import { fileDiff } from "./file-diff.js"
 export const name = "edit"
 
 export const Input = Schema.Struct({
-  path: Schema.String.annotate({
+  path: Schema.optional(Schema.String).annotate({
     description: "File to edit",
   }),
-  oldString: Schema.String.annotate({ description: "Exact text to find and replace" }),
-  newString: Schema.String.annotate({ description: "Text to replace oldString with (must differ from oldString)" }),
+  filePath: Schema.optional(Schema.String).annotate({
+    description: "Alternative file path to edit",
+  }),
+  oldString: Schema.optional(Schema.String).annotate({
+    description: "Exact text to find and replace",
+  }),
+  targetContent: Schema.optional(Schema.String).annotate({
+    description: "Alternative parameter for exact text to find and replace",
+  }),
+  newString: Schema.optional(Schema.String).annotate({
+    description: "Text to replace oldString with (must differ from oldString)",
+  }),
+  replacementContent: Schema.optional(Schema.String).annotate({
+    description: "Alternative parameter for replacement text",
+  }),
   replaceAll: Schema.optionalKey(Schema.Boolean).annotate({
     description:
       "Whether to replace every occurrence of oldString. When false, oldString must match exactly once. Defaults to false.",
@@ -101,6 +114,40 @@ const findLineOccurrences = (content: string, search: string) => {
   }, [])
 }
 
+const findFuzzyLineOccurrences = (content: string, search: string): Match[] => {
+  const normContent = content.replace(/\r\n/g, "\n")
+  const normSearch = search.replace(/\r\n/g, "\n")
+  const fileLines = normContent.split("\n")
+  const rawTargetLines = normSearch.split("\n")
+  let tStart = 0
+  while (tStart < rawTargetLines.length && !rawTargetLines[tStart].trim()) tStart++
+  let tEnd = rawTargetLines.length - 1
+  while (tEnd >= tStart && !rawTargetLines[tEnd].trim()) tEnd--
+  const targetLines = rawTargetLines.slice(tStart, tEnd + 1)
+  if (targetLines.length === 0) return []
+  const trimmedTargetLines = targetLines.map((l) => l.trim())
+  const lineMatches: { startLine: number; endLine: number }[] = []
+  for (let i = 0; i <= fileLines.length - targetLines.length; i++) {
+    let allMatch = true
+    for (let j = 0; j < targetLines.length; j++) {
+      if (fileLines[i + j].trim() !== trimmedTargetLines[j]) {
+        allMatch = false
+        break
+      }
+    }
+    if (allMatch) {
+      lineMatches.push({ startLine: i, endLine: i + targetLines.length - 1 })
+    }
+  }
+  if (lineMatches.length !== 1) return []
+  const originalLines = [...content.matchAll(/[^\n]*(?:\n|$)/g)]
+    .filter((m) => m[0] !== "")
+    .map((m) => ({ start: m.index, end: m.index + m[0].length }))
+  const match = lineMatches[0]
+  if (match.startLine >= originalLines.length || match.endLine >= originalLines.length) return []
+  return [{ start: originalLines[match.startLine].start, end: originalLines[match.endLine].end }]
+}
+
 /** Deferred edit behavior and UX integrations remain visible at the model-facing seam. */
 // TODO: Publish watcher/file-edit events after watcher integration exists.
 // TODO: Add snapshots / undo after design exists.
@@ -132,40 +179,58 @@ export const Plugin = {
                 messageID: context.messageID,
                 id: context.id,
               }
-              if (input.oldString === input.newString) {
+              let targetPath = (input.path || input.filePath || "").trim()
+              if (!targetPath) {
+                const rawOldComment = ((input.oldString || input.targetContent || "") + " " + (input.newString || input.replacementContent || "")).match(
+                  /(?:^|\n|\s)(?:\/\*+|\/{2,}|#|<!--)\s*([a-zA-Z0-9_.\-\\/]+\.[a-zA-Z0-9]+)/,
+                )
+                if (rawOldComment) {
+                  targetPath = rawOldComment[1].trim()
+                }
+              }
+              if (!targetPath) {
+                return yield* new ToolFailure({
+                  message: "No path provided for edit tool.",
+                })
+              }
+              const rawOld = input.oldString || input.targetContent || ""
+              const rawNew = input.newString || input.replacementContent || ""
+              if (rawOld === rawNew) {
                 return yield* new ToolFailure({
                   message: "No changes to apply: oldString and newString are identical.",
                 })
               }
-              if (input.oldString === "") {
+              if (rawOld === "") {
                 return yield* new ToolFailure({
                   message: "oldString must not be empty. Use write to create or overwrite a file.",
                 })
               }
 
-              const target = yield* access.resolve({ path: input.path, kind: "file" })
+              const target = yield* access.resolve({ path: targetPath, kind: "file" })
               yield* access.authorizeExternal([target], context)
 
               const original = yield* FileMutation.readText(environment.files, target.absolute).pipe(
                 Effect.catchTag("Environment.NotFound", () =>
-                  Effect.fail(new ToolFailure({ message: `File not found: ${input.path}` })),
+                  Effect.fail(new ToolFailure({ message: `File not found: ${targetPath}` })),
                 ),
                 Effect.catchTag("Environment.WrongKind", (error) =>
                   error.actual === "directory"
-                    ? Effect.fail(new ToolFailure({ message: `Path is a directory, not a file: ${input.path}` }))
-                    : Effect.fail(new ToolFailure({ message: `Unable to edit ${input.path}`, error })),
+                    ? Effect.fail(new ToolFailure({ message: `Path is a directory, not a file: ${targetPath}` }))
+                    : Effect.fail(new ToolFailure({ message: `Unable to edit ${targetPath}`, error })),
                 ),
               )
               const source = original.text
               const ending = source.includes(crlf) ? crlf : "\n"
-              const oldString = input.oldString.replaceAll(crlf, "\n").replaceAll("\n", ending)
-              const newString = input.newString.replaceAll(crlf, "\n").replaceAll("\n", ending)
+              const oldString = rawOld.replaceAll(crlf, "\n").replaceAll("\n", ending)
+              const newString = rawNew.replaceAll(crlf, "\n").replaceAll("\n", ending)
               const exact = findOccurrences(source, oldString)
               // These one-to-one mappings preserve offsets into the original source.
               const unicode =
                 exact.length > 0 ? [] : findOccurrences(normalizeForMatch(source), normalizeForMatch(oldString))
               const trailing = exact.length > 0 || unicode.length > 0 ? [] : findLineOccurrences(source, oldString)
-              const matches = exact.length > 0 ? exact : unicode.length > 0 ? unicode : trailing
+              const fuzzy =
+                exact.length > 0 || unicode.length > 0 || trailing.length > 0 ? [] : findFuzzyLineOccurrences(source, oldString)
+              const matches = exact.length > 0 ? exact : unicode.length > 0 ? unicode : trailing.length > 0 ? trailing : fuzzy
               const replacements = matches.length
               const replaced = (input.replaceAll === true ? matches : matches.slice(0, 1))
                 .toReversed()
@@ -187,8 +252,17 @@ export const Plugin = {
                 source: permissionSource,
               })
               if (replacements === 0) {
+                let hint = ""
+                const firstTargetLine = oldString.split("\n").map((l) => l.trim()).find(Boolean)
+                if (firstTargetLine && firstTargetLine.length >= 4) {
+                  const lines = source.split("\n")
+                  const foundIdx = lines.findIndex((l) => l.includes(firstTargetLine))
+                  if (foundIdx !== -1) {
+                    hint = ` Note: Similar code was detected near line ${foundIdx + 1}. Check exact indentation and whitespace.`
+                  }
+                }
                 return yield* new ToolFailure({
-                  message: `Could not find oldString in ${input.path}. It must match exactly, including whitespace and indentation.`,
+                  message: `Could not find oldString in ${input.path}.${hint} It must match exactly, including whitespace and indentation.`,
                 })
               }
               if (replacements > 1 && input.replaceAll !== true) {
@@ -210,7 +284,7 @@ export const Plugin = {
                 replacements,
               } satisfies Output
             }).pipe(
-              fileMutation.withLock([FileAccess.resolvePath(location.directory, input.path)]),
+              fileMutation.withLock([FileAccess.resolvePath(location.directory, input.path || input.filePath || "")]),
               Effect.map((output) => ({
                 output,
                 content: `Edited ${output.files[0]?.file} (${output.replacements} replacement${output.replacements === 1 ? "" : "s"})`,

@@ -224,17 +224,7 @@ export default defineConfig({
             "zh-CN": "使用",
             "zh-TW": "使用",
           },
-          items: [
-            { label: "Go", link: "https://opencode.ai/v2/docs/console/go/" },
-            "tui",
-            "cli",
-            "web",
-            "ide",
-            { label: "Console", link: "https://opencode.ai/v2/docs/console/" },
-            "share",
-            "github",
-            "gitlab",
-          ],
+          items: ["go", "tui", "cli", "web", "ide", "zen", "share", "github", "gitlab"],
         },
 
         {

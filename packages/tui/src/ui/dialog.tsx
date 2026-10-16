@@ -28,46 +28,46 @@ export function Dialog(
   const theme = useTheme().surface("dialog")
   const renderer = useRenderer()
 
-  let dismiss = false
+  let backdropPressed = false
   return (
     <ThemeContextProvider context="dialog">
       <box
-      onMouseDown={() => {
-        dismiss = !!renderer.getSelection()
-      }}
-      onMouseUp={() => {
-        if (dismiss) {
-          dismiss = false
-          return
-        }
-        props.onClose?.()
-      }}
-      width={dimensions().width}
-      height={dimensions().height}
-      alignItems="center"
-      justifyContent={props.centered ? "center" : undefined}
-      position="absolute"
-      zIndex={3000}
-      paddingTop={props.centered ? 0 : dimensions().height / 4}
-      left={0}
-      top={0}
-      backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
-    >
-      <box
-        onMouseUp={(e: { stopPropagation(): void }) => {
-          // A selection release must bubble up to the copy-on-select handler in
-          // DialogProvider; the backdrop's dismiss flag keeps it from closing the dialog.
-          if (renderer.getSelection()?.getSelectedText()) return
-          dismiss = false
-          e.stopPropagation()
+        onMouseDown={() => {
+          backdropPressed = !renderer.getSelection()?.getSelectedText()
         }}
-        width={dialogWidth(props.size ?? "medium")}
-        maxWidth={dimensions().width - 2}
-        backgroundColor={theme.background.base}
-        paddingTop={1}
+        onMouseUp={() => {
+          if (!backdropPressed) return
+          backdropPressed = false
+          props.onClose?.()
+        }}
+        width={dimensions().width}
+        height={dimensions().height}
+        alignItems="center"
+        justifyContent={props.centered ? "center" : undefined}
+        position="absolute"
+        zIndex={3000}
+        paddingTop={props.centered ? 0 : dimensions().height / 4}
+        left={0}
+        top={0}
+        backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
       >
-        {props.children}
-      </box>
+        <box
+          onMouseDown={(e: { stopPropagation(): void }) => {
+            backdropPressed = false
+            e.stopPropagation()
+          }}
+          onMouseUp={(e: { stopPropagation(): void }) => {
+            backdropPressed = false
+            if (renderer.getSelection()?.getSelectedText()) return
+            e.stopPropagation()
+          }}
+          width={dialogWidth(props.size ?? "medium")}
+          maxWidth={dimensions().width - 2}
+          backgroundColor={theme.background.base}
+          paddingTop={1}
+        >
+          {props.children}
+        </box>
       </box>
     </ThemeContextProvider>
   )

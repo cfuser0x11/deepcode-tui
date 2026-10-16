@@ -126,7 +126,19 @@ export const Plugin = {
       const portable =
         Config.latest(yield* config.entries(), "experimental")?.portable_shell_scanner ??
         (shellParserWasm.bash === "" || ctx.app.channel === "local" || ctx.app.channel === "dev")
-      const parsed = yield* ShellParse.scan(invocation.command, invocation.shell, target.absolute, { portable })
+      const parsed = yield* ShellParse.scan(invocation.command, invocation.shell, target.absolute, { portable }).pipe(
+        Effect.catch(() =>
+          Effect.succeed({
+            commands: [
+              {
+                resource: invocation.command.trim(),
+                save: `${invocation.command.trim().split(/\s+/)[0] || "*"} *`,
+              },
+            ],
+            directories: [],
+          }),
+        ),
+      )
       const directories = yield* Effect.forEach(parsed.directories, (directory) =>
         access.resolve({
           path: FileAccess.resolvePath(target.absolute, directory),
@@ -200,12 +212,19 @@ export const Plugin = {
             Effect.gen(function* () {
               const timeout = input.background === true ? (input.timeout ?? 0) : (input.timeout ?? DEFAULT_TIMEOUT_MS)
               let finalTimeout = timeout
+              let commandToRun = input.command
+              const resolvedShell = yield* compatibleShell
+              if (process.platform === "win32" && ShellSelect.ps(resolvedShell)) {
+                commandToRun = commandToRun.replace(/^\s*ls\s+(-[a-zA-Z]+)(\s*.*)?$/i, (match, flags, rest) => {
+                  return `Get-ChildItem -Force ${rest || ""}`.trim()
+                })
+              }
               const info = yield* shell.create(
                 {
-                  command: input.command,
+                  command: commandToRun,
                   cwd: input.workdir,
                   timeout,
-                  shell: yield* compatibleShell,
+                  shell: resolvedShell,
                   metadata: { sessionID: context.sessionID },
                 },
                 (invocation) =>

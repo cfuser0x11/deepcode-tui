@@ -9,12 +9,12 @@ import { roots } from "#global-roots"
 import { Flock } from "./flock.js"
 import { makeGlobalNode } from "./effect/app-node.js"
 
-const app = "opencode"
+const app = process.env.DEEPCODE_APP_NAME ?? "deepcode"
 const { data, cache, config, state, tmp } = roots(app)
 
 const paths = {
   get home() {
-    return process.env.OPENCODE_TEST_HOME ?? os.homedir()
+    return process.env.DEEPCODE_TEST_HOME ?? process.env.OPENCODE_TEST_HOME ?? os.homedir()
   },
   data,
   bin: path.join(cache, "bin"),

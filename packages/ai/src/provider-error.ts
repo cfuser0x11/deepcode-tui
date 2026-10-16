@@ -163,7 +163,7 @@ const CONTENT_POLICY_CODES = new Set([
 const GATEWAY_CODE_LABEL = /^[^:\n]+: \[([A-Za-z0-9_.-]+)\]/
 // xAI reports an invalid API key as HTTP 400 with the generic `invalid-argument` code.
 const AUTH_TEXT = /incorrect api key provided/i
-const RATE_LIMIT_TEXT = /rate increased too quickly|rate[-_\s]?limit|too[_\s]?many[_\s]?requests/i
+const RATE_LIMIT_TEXT = /rate increased too quickly|rate[-_\s]?limit|too[_\s]?many[_\s]?requests|messages too frequent/i
 // Only consulted on 429, where throttles and account caps share a status.
 // Z.ai reports balance, plan expiry, plan limits, and plan model access on 429.
 const QUOTA_TEXT =
@@ -176,6 +176,8 @@ const CONTENT_POLICY_TEXT =
   /violating our usage policy|blocked by content filtering policy|content[-_\s]?policy|rejected as a result of our safety system|detected potentially unsafe or sensitive content/i
 const SERVER_ERROR_TEXT =
   /\b(?:try again|(?:please |you can )?retry (?:the |this |your )?request|try (?:the |this |your )?request again|(?:currently |temporarily )?at capacity|overloaded|temporarily unavailable|service[-_\s]?unavailable|(?:server|internal)[-_\s]?error|server (?:is )?busy|provider returned (?:an )?error|resource[-_\s]?exhausted|upstream (?:connect|connection|request)|request buffer limit while retrying upstream)\b/i
+const TRANSIENT_PROXY_TEXT =
+  /(?:сессия.*устарела|сессия deepseek устарела|session[-_\s]?expired|session has expired|account restriction|0 токенов|0 tokens|empty stream|пустой ответ|прокси[-_\s]?сервер временно недоступен|a message is being generated)/i
 
 const Message = Schema.String.check(Schema.isPattern(/\S/))
 
@@ -264,6 +266,11 @@ export function classifyProviderFailure(input: ProviderFailure): AIError["reason
     (input.status === 429 && QUOTA_TEXT.test(text))
   )
     return new QuotaExceededError(details)
+  if (TRANSIENT_PROXY_TEXT.test(text))
+    return new ProviderInternalError({
+      ...details,
+      retryAfterMs: input.retryAfterMs ?? 3000,
+    })
   if (
     input.status === 401 ||
     input.status === 403 ||

@@ -26,7 +26,11 @@ if (process.env.OPENCODE_SSH_ASKPASS_PORT) {
 }
 
 const Handlers = Runtime.handlers(Commands, {
-  $: () => import("./commands/handlers/default"),
+  $: () => {
+    process.stderr.write("[*] Loading modules...\n")
+    return import("./commands/handlers/default")
+  },
+  setup: () => import("./commands/handlers/setup"),
   upgrade: () => import("./commands/handlers/upgrade"),
   uninstall: () => import("./commands/handlers/uninstall"),
   acp: () => import("./commands/handlers/acp"),

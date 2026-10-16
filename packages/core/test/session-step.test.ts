@@ -1,4 +1,4 @@
-import { expect } from "bun:test"
+import { expect, test } from "bun:test"
 import { LanguageModel, LLM, LLMEvent } from "@opencode/ai"
 import { OpenAIChat } from "@opencode/ai/protocols/openai-chat"
 import { TestLLM } from "@opencode/ai/testing"
@@ -14,7 +14,7 @@ import { Session } from "@opencode/core/session"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionProjector } from "@opencode/core/session/projector"
 import { SessionRunnerModel } from "@opencode/core/session/runner/model"
-import { SessionStep } from "@opencode/core/session/runner/step"
+import { SessionStep, isAssistantWaitingForUser } from "@opencode/core/session/runner/step"
 import { SessionMessageTable, SessionTable } from "@opencode/core/session/sql"
 import { Snapshot } from "@opencode/core/snapshot"
 import { ToolOutput } from "@opencode/core/tool-output"
@@ -158,3 +158,23 @@ for (const fixture of [
     }),
   )
 }
+
+test("isAssistantWaitingForUser detects conversational responses and no-task statements", () => {
+  const casualRussian =
+    "Не могу оценить по шкале — я инженерный агент, а не арбитр вайбов. Скажу так: это твой личный вкус, и он никак не мешает мне работать. Если серьёзно — за этим запросом не стоит задача по коду. Скажи, что нужно сделать в проекте: прочитать файлы, поправить баг, написать модуль, прогнать тесты."
+  expect(isAssistantWaitingForUser(casualRussian)).toBe(true)
+
+  const noTaskEnglish =
+    "There is no task here to execute. Your message contains formatting instructions and an identity reminder, but no actual action or target (no file to write, no command to run, no repo to modify)."
+  expect(isAssistantWaitingForUser(noTaskEnglish)).toBe(true)
+
+  const noTaskRussian = "Тут нет задачи для выполнения."
+  expect(isAssistantWaitingForUser(noTaskRussian)).toBe(true)
+
+  const readyPrompt = "Готов помочь, чем могу помочь?"
+  expect(isAssistantWaitingForUser(readyPrompt)).toBe(true)
+
+  const actionPromise = "Сейчас я создам новый файл test.ts и запущу тесты."
+  expect(isAssistantWaitingForUser(actionPromise)).toBe(false)
+})
+

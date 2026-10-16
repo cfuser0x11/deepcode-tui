@@ -42,14 +42,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const models = () => data.location.model.list(location.ref)
     const providers = () => data.location.provider.list(location.ref)
 
+    function normalizeModel<T extends ModelPreferenceModel | undefined>(model: T): T {
+      if (!model) return model
+      if (model.providerID === "deepseek" && model.modelID !== "deepseek-v4") {
+        return {
+          ...model,
+          modelID: "deepseek-v4",
+        }
+      }
+      return model
+    }
+
     function isModelValid(model: ModelPreferenceModel) {
-      return !!models()?.some((item) => item.providerID === model.providerID && item.id === model.modelID)
+      const target = normalizeModel(model)
+      return !!models()?.some((item) => item.providerID === target.providerID && item.id === target.modelID)
     }
 
     function getFirstValidModel(...modelFns: (() => ModelPreferenceModel | undefined)[]) {
       for (const modelFn of modelFns) {
         const model = modelFn()
-        if (model && isModelValid(model)) return model
+        if (model && isModelValid(model)) return normalizeModel(model)
       }
     }
 
@@ -158,8 +170,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       function applyPreferences(value: ModelPreference) {
         batch(() => {
-          setPreferences("recent", value.recent)
-          setPreferences("favorite", value.favorite)
+          setPreferences("recent", value.recent.map(normalizeModel))
+          setPreferences("favorite", value.favorite.map(normalizeModel))
           setPreferences("variant", value.variant)
           setPreferences("ready", true)
         })
@@ -181,20 +193,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       const fallbackModel = createMemo(() => {
         if (args.model) {
           const { providerID, modelID } = parse(args.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
+          const target = normalizeModel({ providerID, modelID })
+          if (isModelValid(target)) {
+            return target
           }
         }
 
         const configured = configuredModel()
-        if (configured && isModelValid(configured)) return configured
+        if (configured && isModelValid(configured)) return normalizeModel(configured)
 
         for (const item of preferences.recent) {
           if (isModelValid(item)) {
-            return item
+            return normalizeModel(item)
           }
         }
 
@@ -233,7 +243,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         return `${JSON.stringify([ref.directory, ref.workspaceID])}:${agentID}`
       }
 
-      function preferredSelection(model: ModelPreferenceModel): ModelSelection {
+      function preferredSelection(rawModel: ModelPreferenceModel): ModelSelection {
+        const model = normalizeModel(rawModel)
         const configured = agent.current()?.model
         const fallback = configuredModel()
         const preferred = preferences.variant[modelPreferenceKey(model)]
@@ -253,10 +264,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       function durableSelection(sessionID: string): ModelSelection | undefined {
         const model = data.session.get(sessionID)?.model
         if (!model) return
+        let modelID = model.id
+        let variant = normalizeModelVariant(model.variant)
+        if (model.providerID === "deepseek" && modelID !== "deepseek-v4") {
+          if (modelID.includes("reasoner") || modelID.includes("r1") || modelID.includes("expert")) {
+            variant = variant ?? "thinking"
+          }
+          modelID = "deepseek-v4"
+        }
         return {
           providerID: model.providerID,
-          modelID: model.id,
-          variant: normalizeModelVariant(model.variant),
+          modelID,
+          variant,
         }
       }
 
@@ -268,11 +287,20 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           selectionState.selectionBySessionAgent[sessionID]?.[current.id] ??
           (!session?.agent || session.agent === current.id ? durableSelection(sessionID) : undefined)
         if (selected) {
-          const info = models()?.find((item) => item.providerID === selected.providerID && item.id === selected.modelID)
+          let modelID = selected.modelID
+          let variant = normalizeModelVariant(selected.variant)
+          if (selected.providerID === "deepseek" && modelID !== "deepseek-v4") {
+            if (modelID.includes("reasoner") || modelID.includes("r1") || modelID.includes("expert")) {
+              variant = variant ?? "thinking"
+            }
+            modelID = "deepseek-v4"
+          }
+          const info = models()?.find((item) => item.providerID === selected.providerID && item.id === modelID)
           return {
-            ...selected,
+            providerID: selected.providerID,
+            modelID,
             variant:
-              !info || info.variants.some((variant) => variant.id === selected.variant) ? selected.variant : undefined,
+              !info || info.variants.some((item) => item.id === variant) ? variant : undefined,
           }
         }
         const model = newSessionModel()
@@ -387,20 +415,21 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return models() !== undefined
         },
         recent() {
-          return preferences.recent
+          return preferences.recent.map(normalizeModel)
         },
         favorite() {
-          return preferences.favorite
+          return preferences.favorite.map(normalizeModel)
         },
         parsed: createMemo(() => {
-          const value = currentSelection()
-          if (!value) {
+          const raw = currentSelection()
+          if (!raw) {
             return {
               provider: "Connect a provider",
               model: "No provider selected",
               reasoning: false,
             }
           }
+          const value = normalizeModel(raw)
           const provider = providers()?.find((item) => item.id === value.providerID)
           const info = models()?.find((item) => item.providerID === value.providerID && item.id === value.modelID)
           return {
@@ -412,7 +441,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         cycle(direction: 1 | -1) {
           const current = currentSelection()
           if (!current) return
-          const recent = preferences.recent.filter(isModelValid)
+          const recent = preferences.recent.map(normalizeModel).filter(isModelValid)
           const index = recent.findIndex((x) => x.providerID === current.providerID && x.modelID === current.modelID)
           let next = index === -1 ? (direction === 1 ? 0 : recent.length - 1) : index + direction
           if (next < 0) next = recent.length - 1
@@ -422,7 +451,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           selectModel({ ...val })
         },
         cycleFavorite(direction: 1 | -1) {
-          const favorites = preferences.favorite.filter((item) => isModelValid(item))
+          const favorites = preferences.favorite.map(normalizeModel).filter((item) => isModelValid(item))
           if (!favorites.length) {
             toast.show({
               variant: "info",

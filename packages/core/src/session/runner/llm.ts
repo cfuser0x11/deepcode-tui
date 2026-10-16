@@ -35,6 +35,18 @@ import { MAX_STEPS_PROMPT } from "./max-steps.js"
 const CONTINUE_AFTER_INCOMPLETE_STREAM =
   "The previous response was interrupted. Continue from where you left off without repeating completed content."
 
+const NUDGE_STEP1_PROMPT =
+  "CRITICAL EXECUTION: Do NOT output conversational monologue, explanations, or simulate tool execution (like 'Tool: ...' or 'Assistant: ...'). Invoke the required tool call directly using XML/DSML tags, for example:\n<tool_call name=\"write\">\n<path>filepath</path>\n<content>file_contents</content>\n</tool_call>\nor\n<tool_call name=\"shell\">\n<command>command</command>\n</tool_call>\nNo preamble. Output the tool call now."
+
+const NUDGE_STEP2_PROMPT =
+  "SYSTEM UNSTUCK: You have produced monologue or stopped without executing tools. Call the appropriate tool now using XML tags (<tool_call name=\"...\">) to proceed with execution, or output <end_working> followed by your final summary if all tasks are completed. Do not simulate 'Tool:' or 'Assistant:' in plain text."
+
+const NUDGE_STEP3_PROMPT =
+  "CRITICAL: Execute the next planned task now by invoking a tool call using <tool_call name=\"...\"> tags. Do NOT output conversational monologue, code blocks, or simulated 'Tool:' in chat."
+
+const NUDGE_EMPTY_PROMPT =
+  "CRITICAL: You produced an empty response without executing tools. If you need to inspect files or run commands, invoke the tool call directly using <tool_call name=\"write\"> or <tool_call name=\"shell\">. Do not simulate 'Tool:' in chat. If all tasks are completed, provide your final summary in plain text without <end_working>."
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -185,10 +197,17 @@ const layer = Layer.effect(
         ),
       )
 
+      let consecutiveNudges = 0
       while (true) {
         const next = yield* advanceToStep()
         if (next._tag !== "Ready") return next
-        continuing = yield* runStep(next.context, step)
+        const result = yield* runStep(next.context, step, consecutiveNudges)
+        if (result.nudged) {
+          consecutiveNudges++
+        } else {
+          consecutiveNudges = 0
+        }
+        continuing = result.continuing
         step++
         force = false
         entering = false
@@ -203,7 +222,11 @@ const layer = Layer.effect(
     })
 
     /** Owns logical Step policy; each attempt owns its streaming, tools, and durable settlement. */
-    const runStep = Effect.fn("SessionRunner.runStep")(function* (first: SessionContext.Loaded, step: number) {
+    const runStep = Effect.fn("SessionRunner.runStep")(function* (
+      first: SessionContext.Loaded,
+      step: number,
+      consecutiveNudges: number,
+    ) {
       const sessionID = first.session.id
       let assistantMessageID = SessionMessage.ID.create()
       const retry = yield* SessionRunnerRetry.make(bus, sessionID)
@@ -242,6 +265,11 @@ const layer = Layer.effect(
           webSocket: "session",
           inputTokens: SessionCompaction.estimatePrompt(loaded),
         })
+        const hadExplorationTools = loaded.messages.some(
+          (m) =>
+            m.type === "shell" ||
+            (m.type === "assistant" && m.content.some((c) => c.type === "tool")),
+        )
         const outcome = yield* steps.attempt({
           isLocationClosed: lifecycle.isClosed,
           sessionID,
@@ -249,6 +277,8 @@ const layer = Layer.effect(
           agent: loaded.agent.id,
           model: loaded.model,
           prepared,
+          hadExplorationTools,
+          consecutiveNudges,
           retry: (cause, error, proposed) =>
             retry.decide({
               cause,
@@ -268,13 +298,38 @@ const layer = Layer.effect(
           ),
         })
         const completed = yield* SessionStep.Outcome.$match(outcome, {
-          Completed: (outcome) => Effect.succeed(outcome.needsContinuation),
-          Retry: (outcome) =>
-            retry.wait({
-              decision: outcome.decision,
-              error: outcome.error,
-              assistantMessageID,
+          Completed: (outcome) =>
+            Effect.gen(function* () {
+              if (outcome.needsContinuation && outcome.needsNudge) {
+                if (consecutiveNudges < 3) {
+                  const nudgePrompt = outcome.isEmptyResponse
+                    ? NUDGE_EMPTY_PROMPT
+                    : consecutiveNudges === 0
+                      ? NUDGE_STEP1_PROMPT
+                      : consecutiveNudges === 1
+                        ? NUDGE_STEP2_PROMPT
+                        : NUDGE_STEP3_PROMPT
+                  yield* bus.publish(SessionEvent.Synthetic, {
+                    sessionID,
+                    text: nudgePrompt,
+                  })
+                  assistantMessageID = SessionMessage.ID.create()
+                  yield* Effect.sleep("1000 millis")
+                  return { continuing: true, nudged: true }
+                } else {
+                  return { continuing: false, nudged: false }
+                }
+              }
+              return { continuing: outcome.needsContinuation, nudged: false }
             }),
+          Retry: (outcome) =>
+            retry
+              .wait({
+                decision: outcome.decision,
+                error: outcome.error,
+                assistantMessageID,
+              })
+              .pipe(Effect.as(undefined)),
           Continue: Effect.fnUntraced(function* (outcome) {
             yield* retry.wait({
               decision: outcome.decision,

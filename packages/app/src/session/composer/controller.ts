@@ -9,7 +9,6 @@ import { createSessionComposerRegionController } from "./session-composer-region
 
 export function createSessionComposerController(input: {
   sessionID: string
-  sessionKey: Accessor<string>
   controls: Accessor<ComposerControls>
   dock: Parameters<typeof createSessionComposerRegionController>[0]
 }) {
@@ -19,7 +18,6 @@ export function createSessionComposerController(input: {
 
   const adapter = createActiveComposerAdapter({
     sessionID: input.sessionID,
-    sessionKey: input.sessionKey,
     controls: input.controls,
     submitted: region.onResponseSubmit,
     setEditor: (element) => {

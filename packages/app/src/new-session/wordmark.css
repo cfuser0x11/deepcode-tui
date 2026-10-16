@@ -1,11 +1,15 @@
 [data-component="new-session-wordmark"] {
   --icon-strong-base: var(--icon-base);
+  --deep-base: #1d4ed8;
+  --deep-weak: #0c1938;
   --wordmark-shimmer-opacity: 0.45;
 
   .wordmark-shimmer {
     --icon-base: white;
     --icon-strong-base: white;
     --icon-weak-base: transparent;
+    --deep-base: white;
+    --deep-weak: transparent;
 
     /* Blend above the base logo's opacity so the sweep only adds light in either theme. */
     color: white;

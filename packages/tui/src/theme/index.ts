@@ -28,6 +28,7 @@ function listThemes(): Record<string, ThemeDocumentSource> {
   const themes: Record<string, ThemeDocumentSource> = {
     ...DEFAULT_THEMES,
     opencode: getOpenCodeTheme(),
+    deepcode: getOpenCodeTheme(),
     ...customThemes,
   }
   return {

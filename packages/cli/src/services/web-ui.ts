@@ -36,11 +36,11 @@ function serveUI(
   assets: AssetMap,
   brotli: BrotliMap | undefined,
 ) {
-  const key = url.pathname.replace(/^\//, "")
+  const key = url.pathname.replace(/^\//, "").replaceAll("\\", "/")
   // A browser that takes brotli gets the embedded bytes as they are, so the server decompresses nothing. The HTML stays
   // decoded, because its CSP hashes the inline theme script.
-  const encoded = key !== "index.html" && acceptsBrotli(request.headers["accept-encoding"]) ? brotli?.[key] : undefined
-  const requested = encoded ?? assets[key]
+  const encoded = key !== "index.html" && acceptsBrotli(request.headers["accept-encoding"]) ? (brotli?.[key] ?? brotli?.[key.replaceAll("/", "\\")]) : undefined
+  const requested = encoded ?? assets[key] ?? assets[key.replaceAll("/", "\\")]
   if ((key.startsWith("_assets/") || key.startsWith("icons/")) && requested === undefined)
     return Effect.succeed(HttpServerResponse.empty({ status: 404, headers: { "cache-control": "no-store" } }))
   const name = requested !== undefined ? key : "index.html"

@@ -19,7 +19,6 @@ import {
   type ComparisonPair,
 } from "../routes/compare-cards"
 import { ComparisonRadar } from "../routes/compare-radar"
-import { setStatsPageCacheHeaders } from "../routes/stats-cache"
 import {
   catalogLabPath,
   catalogSlug,
@@ -122,7 +121,7 @@ const getComparisonData = query(async (models: StatsModelComparisonInput[]) => {
 
 export default function ModelCompareDetailPage(props: ModelCompareDetailPageProps = {}) {
   const event = getRequestEvent()
-  setStatsPageCacheHeaders(event?.response.headers)
+  event?.response.headers.set("Cache-Control", "public, max-age=60, s-maxage=300, stale-while-revalidate=86400")
   const params = useParams()
   const [searchParams] = useSearchParams<{ add?: string }>()
   const firstLabParam = createMemo(() => props.first?.lab ?? params.firstLab ?? "")

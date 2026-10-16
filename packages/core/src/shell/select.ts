@@ -97,8 +97,8 @@ function win(options?: Options, bin?: string) {
     new Set(
       [
         findExecutable("pwsh", bin),
-        findExecutable("powershell", bin),
         gitbash(options, bin),
+        findExecutable("powershell", bin),
         process.env.COMSPEC || "cmd.exe",
       ]
         .filter((item): item is string => Boolean(item))

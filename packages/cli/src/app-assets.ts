@@ -33,7 +33,7 @@ const sourceAssets = Effect.fnUntraced(function* () {
       Effect.fnUntraced(function* (file) {
         const target = path.join(root, file)
         if ((yield* fs.stat(target)).type === "Directory") return
-        return [file, target] as const
+        return [file.replaceAll("\\", "/"), target] as const
       }),
       { concurrency: "unbounded" },
     )).filter((asset) => asset !== undefined),

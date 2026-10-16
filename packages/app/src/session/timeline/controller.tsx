@@ -68,43 +68,30 @@ export function createTimelineController(input: { session: TimelineSessionSource
   const language = useLanguage()
   const platform = usePlatform()
 
-  const visibleMessages = createMemo(() => {
+  const handedOffMessages = createMemo(() =>
+    applyTimelineMessageHandoff(
+      input.session.history.messages(),
+      getSessionMessageHandoff(input.session.identity.sessionKey()),
+    ),
+  )
+
+  const projectedMessages = createMemo(() => {
     const id = input.session.identity.sessionID()
 
     return visibleTimelineMessages(
-      input.session.history.messages(),
+      handedOffMessages(),
       id ? data.session.pending.list(id) : [],
       input.session.data.info()?.revert?.messageID,
     )
   })
 
-  // A handoff projects after visibility: its prompt commits any staged revert, so the boundary does not hide it.
-  const projectedMessages = createMemo(() =>
-    applyTimelineMessageHandoff(
-      visibleMessages(),
-      getSessionMessageHandoff(input.session.identity.sessionKey()),
-      input.session.data.info(),
-    ),
-  )
-
-  // Inputs that wait behind the active turn. A starting steer opens the next turn instead, so the turn before it
-  // stays finished, as it will once the steer is delivered.
   const pendingInputIDs = createMemo(() => {
     const id = input.session.identity.sessionID()
 
-    if (!id) return new Set<string>()
-
     return new Set(
-      data.session.pending
-        .list(id)
-        .flatMap((item) =>
-          (item.type === "user" &&
-            item.delivery === "steer" &&
-            data.session.pending.status(id, item.id) !== "starting") ||
-          item.type === "synthetic"
-            ? [item.id]
-            : [],
-        ),
+      (id ? data.session.pending.list(id) : []).flatMap((item) =>
+        (item.type === "user" && item.delivery === "steer") || item.type === "synthetic" ? [item.id] : [],
+      ),
     )
   })
 

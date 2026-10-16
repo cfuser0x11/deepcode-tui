@@ -27,6 +27,7 @@ export async function renderLocal(
     preferences?: Partial<ModelPreference>
     args?: Args
     fetch?: FetchHandler
+    children?: () => any
   } = {},
 ) {
   const temporary = await tmpdir()
@@ -72,6 +73,7 @@ export async function renderLocal(
                             <LocalProvider>
                               <DialogProvider>
                                 <Probe />
+                                {input.children?.()}
                               </DialogProvider>
                             </LocalProvider>
                           </PermissionProvider>

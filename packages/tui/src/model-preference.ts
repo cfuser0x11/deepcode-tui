@@ -68,6 +68,9 @@ export function cycleModelVariant(current: string | undefined, variants: string[
   const named = variants.filter((variant) => variant !== "default")
   if (named.length === 0) return undefined
   const value = normalizeModelVariant(current)
+  if (named.length === 2 && named.includes("none") && named.includes("thinking")) {
+    return value === "thinking" ? "none" : "thinking"
+  }
   if (value === undefined) return named[0]
   const index = named.indexOf(value)
   if (index === -1 || index === named.length - 1) return undefined

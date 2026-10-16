@@ -459,6 +459,22 @@ export function RunCommandMenuBody(props: {
         footer: "/new",
         keywords: "new session clear",
       },
+      {
+        action: "slash",
+        category: "Session",
+        name: "dead",
+        display: "Toggle dead mode",
+        footer: "/dead",
+        keywords: "dead mode uncensored system prompt",
+      },
+      {
+        action: "slash",
+        category: "Session",
+        name: "setup",
+        display: "Configure DeepSeek API",
+        footer: "/setup",
+        keywords: "setup api key token deepseek",
+      },
     ]
     const agent: CommandEntry[] = [
       {

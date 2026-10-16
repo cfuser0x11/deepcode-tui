@@ -285,6 +285,29 @@ export function Session(props: {
     },
   )
   const boundaries = createMemo(() => messageBoundaryIDs(rows, messages()))
+  const sessionRunningState = createMemo(() => {
+    if (data.session.status(route.sessionID) !== "running") return undefined
+    const list = messages()
+    const last = list.at(-1)
+    if (!last) return "Waiting for model…"
+    if (last.type === "user") return "Contacting model…"
+    if (last.type === "assistant") {
+      if (last.time.completed !== undefined) return "Planning next step…"
+      const content = last.content ?? []
+      const activeThought = content.find(
+        (part) => part.type === "reasoning" && part.time?.completed === undefined,
+      )
+      if (activeThought) return undefined
+      const activeTool = content.find(
+        (part) => part.type === "tool" && (part.state.status === "streaming" || part.state.status === "running"),
+      )
+      if (activeTool) return undefined
+      const activeText = content.some((part) => part.type === "text" && part.text.trim().length > 0)
+      if (activeText) return undefined
+      return "Generating response…"
+    }
+    return "Working…"
+  })
   const anchors = createTimelineAnchors()
   const [navigationMessage, setNavigationMessage] = createSignal<string>()
   const [navigationSlack, setNavigationSlack] = createSignal(0)
@@ -692,10 +715,6 @@ export function Session(props: {
         footerHints={[{ title: "steer", label: "enter" }]}
       />
     ))
-  const unavailable = (feature: string) => {
-    toast.show({ message: `${feature} is not implemented for V2 sessions yet`, variant: "error", duration: 5000 })
-    dialog.clear()
-  }
 
   const alignMessage = (messageID: string, top: number) => {
     scroll.stickyScroll = false
@@ -906,14 +925,6 @@ export function Session(props: {
   ]
 
   const baseCommands = createMemo(() => [
-    {
-      title: "Share session",
-      id: "session.share",
-      suggested: route.type === "session",
-      group: "Session",
-      slash: { name: "share" },
-      run: () => unavailable("Sharing"),
-    },
     {
       title: "Rename session",
       id: "session.rename",
@@ -1439,6 +1450,13 @@ export function Session(props: {
                     />
                   )}
                 </For>
+                <Show when={sessionRunningState()}>
+                  {(label) => (
+                    <box paddingLeft={3} marginTop={1} flexShrink={0} flexDirection="row" gap={1}>
+                      <Spinner color={theme.text.muted}>{label()}</Spinner>
+                    </box>
+                  )}
+                </Show>
                 <BackgroundToolHint messages={messages()} />
                 <Show when={session()?.revert?.messageID}>
                   <RevertMessage
@@ -2048,6 +2066,7 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
   const plugins = usePlugin()
   const status = () => props.message.status
   const cancelled = () => props.message.status === "failed" && props.message.error.type === "aborted"
+  const [expanded, setExpanded] = createSignal(props.message.status === "failed")
   const text = () =>
     props.message.status === "failed" ? (cancelled() ? "" : props.message.error.message) : props.message.summary
   const content = createMemo(() => text().trim())
@@ -2065,7 +2084,15 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
     <box>
       <box flexDirection="row" alignItems="center">
         <box border={["top"]} borderColor={color()} flexGrow={1} />
-        <box flexDirection="row" gap={1} paddingLeft={1} paddingRight={1}>
+        <box
+          flexDirection="row"
+          gap={1}
+          paddingLeft={1}
+          paddingRight={1}
+          onMouseDown={() => {
+            if (content()) setExpanded(!expanded())
+          }}
+        >
           <Switch>
             <Match when={status() === "running"}>
               <Show when={ctx.config.animations ?? true} fallback={<text fg={color()}>⋯</text>}>
@@ -2087,10 +2114,13 @@ function CompactionMessage(props: { message: Extract<SessionMessageInfo, { type:
           <Show when={usage()}>
             <text fg={color()}>· {usage()}</text>
           </Show>
+          <Show when={content() && props.message.status === "completed"}>
+            <text fg={theme.text.muted}>{expanded() ? "[hide]" : "[show]"}</text>
+          </Show>
         </box>
         <box border={["top"]} borderColor={color()} flexGrow={1} />
       </box>
-      <Show when={content()}>
+      <Show when={expanded() && content()}>
         <box paddingTop={1} paddingLeft={3}>
           <markdown
             syntaxStyle={syntax()}

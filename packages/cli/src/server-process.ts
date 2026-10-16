@@ -19,13 +19,14 @@ import { RemoteTunnel } from "./services/remote-tunnel"
 import { WebUi } from "./services/web-ui"
 import { databasePath } from "./database-path"
 
-export type Mode = "default" | "service" | "stdio"
+export type Mode = "default" | "service" | "stdio" | "in-process"
 
 export type Options = {
   readonly mode: Mode
   readonly hostname?: string
   readonly port?: number
   readonly cors?: readonly string[]
+  readonly onReady?: (endpoint: { url: string; password: string }) => Effect.Effect<void>
 }
 
 // The process effect lives until server shutdown; tracing it would parent every request to one process-lifetime trace.
@@ -64,7 +65,8 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
       const foreground = options.mode === "default"
       const serviceOptions = options.mode === "service" ? yield* ServiceConfig.options() : undefined
       const config = options.mode === "service" ? yield* ServiceConfig.read() : {}
-      const hostname = options.hostname ?? config.hostname ?? "127.0.0.1"
+      const envHostname = process.env.DEEPCODE_HOSTNAME || process.env.OPENCODE_HOSTNAME
+      const hostname = options.hostname ?? envHostname ?? config.hostname ?? "127.0.0.1"
       const port = options.port ?? config.port ?? (options.mode === "service" ? ServiceConfig.defaultPort() : undefined)
       const findIncumbent =
         serviceOptions !== undefined && port !== undefined
@@ -110,7 +112,7 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           models: {
             url: process.env.OPENCODE_MODELS_URL,
             file: process.env.OPENCODE_MODELS_PATH,
-            fetch: !truthy(process.env.OPENCODE_DISABLE_MODELS_FETCH),
+            fetch: Boolean(process.env.OPENCODE_ENABLE_MODELS_FETCH && truthy(process.env.OPENCODE_ENABLE_MODELS_FETCH)),
           },
           config: {
             directory: process.env.OPENCODE_CONFIG_DIR,
@@ -191,10 +193,17 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
           }),
         )
       }
-      const url = HttpServer.formatAddress(server.address)
-      console.log(options.mode === "stdio" ? JSON.stringify({ url }) : `server listening on ${url}`)
+      const addressUrl = HttpServer.formatAddress(server.address)
+      const parsedUrl = new URL(addressUrl)
+      const localUrl =
+        parsedUrl.hostname === "0.0.0.0" || parsedUrl.hostname === "::"
+          ? `${parsedUrl.protocol}//127.0.0.1:${parsedUrl.port}`
+          : addressUrl
+      if (options.mode === "stdio") console.log(JSON.stringify({ url: localUrl }))
+      else if (options.mode !== "in-process") console.log(`server listening on ${addressUrl}`)
       if (foreground && !environmentPassword) console.log(`server password ${password}`)
-      return yield* options.mode === "service"
+      if (options.onReady) yield* options.onReady({ url: localUrl, password })
+      return yield* options.mode === "service" || options.mode === "in-process"
         ? server.shutdown
         : options.mode === "stdio"
           ? waitForStdinClose()
@@ -204,7 +213,8 @@ const processEffect = Effect.fnUntraced(function* (options: Options) {
 })
 
 function serviceURL(hostname: string, port: number) {
-  return `http://${hostname.includes(":") ? `[${hostname}]` : hostname}:${port}`
+  const host = hostname === "0.0.0.0" ? "127.0.0.1" : hostname === "::" ? "[::1]" : hostname
+  return `http://${host.includes(":") ? `[${host}]` : host}:${port}`
 }
 
 function truthy(value?: string) {
@@ -219,12 +229,35 @@ function addressInUse(error: unknown): boolean {
 
 function waitForStdinClose() {
   return Effect.callback<void>((resume) => {
-    const close = () => resume(Effect.void)
+    let closed = false
+    let heartbeat: ReturnType<typeof setInterval> | undefined
+
+    const close = () => {
+      if (closed) return
+      closed = true
+      if (heartbeat !== undefined) clearInterval(heartbeat)
+      resume(Effect.void)
+    }
+
     process.stdin.once("end", close)
     process.stdin.once("close", close)
     process.stdin.resume()
     if (process.stdin.readableEnded || process.stdin.destroyed) close()
+
+    const parentPidStr = process.env.OPENCODE_PARENT_PID
+    const parentPid = parentPidStr ? parseInt(parentPidStr, 10) : undefined
+    if (parentPid && !isNaN(parentPid)) {
+      heartbeat = setInterval(() => {
+        try {
+          process.kill(parentPid, 0)
+        } catch {
+          close()
+        }
+      }, 1000)
+    }
+
     return Effect.sync(() => {
+      if (heartbeat !== undefined) clearInterval(heartbeat)
       process.stdin.off("end", close)
       process.stdin.off("close", close)
       process.stdin.pause()

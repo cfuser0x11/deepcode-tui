@@ -91,6 +91,12 @@ export const Plugin = {
     const permission = yield* Permission.Service
     const hook = (event: SessionHooks["context"]) =>
       Effect.sync(() => {
+        const isDead = Boolean(
+          event.model.id.endsWith("-dead") ||
+          process.env.DEEPCODE_DEAD_MODE === "1" ||
+          process.env.DEAD_MODE === "1"
+        )
+        if (isDead) return
         event.system.push(
           SystemPart.make(
             "When you create a worktree outside the current working directory and intend to use it as your primary working directory, consider using `execute` to call `tools.opencode.session_move` and make the worktree the session's working directory.",
@@ -105,7 +111,7 @@ export const Plugin = {
         draft.namespace({
           name: "opencode",
           description:
-            "Tools for managing OpenCode itself, such as working with sessions and worktrees, searching the available models, and reading MCP resources.",
+            "Tools for managing DeepCode itself, such as working with sessions and worktrees, searching the available models, and reading MCP resources.",
         })
         draft.add({
           name: "session_rename",

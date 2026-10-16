@@ -43,8 +43,8 @@ import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
-import { DialogIntegration } from "../dialog-integration"
 import { useConnected } from "../use-connected"
+import { useDeadMode } from "../../context/dead-mode"
 import { useToast } from "../../ui/toast"
 import { createFadeIn } from "../../util/signal"
 import { DialogSkill } from "../dialog-skill"
@@ -208,6 +208,7 @@ export function Prompt(props: PromptProps) {
   const config = useConfig().data
   const dialog = useDialog()
   const toast = useToast()
+  const deadMode = useDeadMode()
   const status = createMemo(() => data.session.status(props.sessionID ?? ""))
   const history = usePromptHistory()
   const stash = usePromptStash()
@@ -316,12 +317,9 @@ export function Prompt(props: PromptProps) {
   function promptModelWarning() {
     toast.show({
       variant: "warning",
-      message: "Connect an integration to send prompts",
+      message: "DeepSeek model is not configured. Run 'deepcode setup'.",
       duration: 3000,
     })
-    if (!connected()) {
-      dialog.replace(() => <DialogIntegration />)
-    }
   }
 
   function dismissEditorContext() {
@@ -1576,7 +1574,12 @@ export function Prompt(props: PromptProps) {
     metadataAnimationsEnabled,
   )
   const variantMetaAlpha = createFadeIn(
-    () => !!promptDisplay().agentLabel && store.mode === "normal" && !!promptDisplay().variant,
+    () =>
+      !!promptDisplay().agentLabel &&
+      store.mode === "normal" &&
+      !!promptDisplay().variant &&
+      promptDisplay().variant !== "none" &&
+      promptDisplay().variant !== "default",
     metadataAnimationsEnabled,
   )
   createEffect(() => {
@@ -1590,6 +1593,12 @@ export function Prompt(props: PromptProps) {
   })
 
   const placeholderText = createMemo(() => {
+    const isDead = deadMode.get()
+    if (isDead && store.mode !== "shell") {
+      const value = "Ask anything, I SAW ANYTHING"
+      const width = dimensions().width < 44 ? dimensions().width - 5 : Math.min(75, dimensions().width - 4) - 5
+      return Locale.takeWidth(value, Math.max(1, width)).trimEnd()
+    }
     const value = (() => {
       if (store.mode === "shell") {
         if (!shell().length) return undefined

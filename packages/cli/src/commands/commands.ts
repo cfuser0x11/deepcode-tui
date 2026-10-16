@@ -10,11 +10,30 @@ export const PrintLogs = GlobalFlag.Setting("print-logs")({
   ),
 })
 
+declare const DEEPCODE_CLI_NAME: string | undefined
 declare const OPENCODE_CLI_NAME: string | undefined
+
+const CLI_NAME =
+  typeof DEEPCODE_CLI_NAME === "string"
+    ? DEEPCODE_CLI_NAME
+    : typeof OPENCODE_CLI_NAME === "string"
+      ? OPENCODE_CLI_NAME
+      : "deepcode"
+
+const DeadParam = {
+  dead: Flag.Boolean("dead").pipe(
+    Flag.withDescription("Enable Dead Mode (uncensored direct file execution)"),
+    Flag.withDefault(false),
+  ),
+}
 
 const ServerParams = {
   standalone: Flag.Boolean("standalone").pipe(
     Flag.withDescription("Run with a private server instead of the background service"),
+    Flag.withDefault(false),
+  ),
+  background: Flag.Boolean("background").pipe(
+    Flag.withDescription("Keep the server running in the background after deepcode closes"),
     Flag.withDefault(false),
   ),
   server: Flag.String("server").pipe(
@@ -35,13 +54,18 @@ const PermissionParams = {
   ),
 }
 
-const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME : "opencode", {
-  description: "OpenCode command line interface",
+const Root = Spec.make(CLI_NAME, {
+  description: "DeepCode Pro command line interface",
   params: {
     ...ServerParams,
     ...PermissionParams,
+    ...DeadParam,
+    setup: Flag.Boolean("setup").pipe(
+      Flag.withDescription("Run DeepSeek initial setup wizard to configure API key and endpoint"),
+      Flag.withDefault(false),
+    ),
     directory: Argument.String("directory").pipe(
-      Argument.withDescription("Directory to start OpenCode in"),
+      Argument.withDescription("Directory to start DeepCode in"),
       Argument.optional,
     ),
     continue: Flag.Boolean("continue").pipe(
@@ -58,7 +82,7 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
   },
   commands: [
     Spec.make("upgrade", {
-      description: "Upgrade OpenCode to the latest or a specific version",
+      description: "Upgrade DeepCode to the latest or a specific version",
       aliases: ["update"],
       params: {
         target: Argument.String("target").pipe(
@@ -72,8 +96,11 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         ),
       },
     }),
+    Spec.make("setup", {
+      description: "Setup wizard for DeepSeek API key and model configuration",
+    }),
     Spec.make("uninstall", {
-      description: "Uninstall OpenCode, keeping session data, configuration, and state",
+      description: "Uninstall DeepCode, keeping session data, configuration, and state",
       params: {
         dryRun: Flag.Boolean("dry-run").pipe(
           Flag.withDescription("Show what would be removed without removing"),
@@ -370,11 +397,12 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         ),
         agent: Flag.String("agent").pipe(Flag.withDescription("Agent to use"), Flag.optional),
         prompt: Flag.String("prompt").pipe(Flag.withDescription("Prompt to use"), Flag.optional),
+        ...DeadParam,
         demo: Flag.Boolean("demo").pipe(Flag.withDefault(false), Flag.withHidden),
       },
     }),
     Spec.make("run", {
-      description: "Run OpenCode with a message",
+      description: "Run DeepCode with a message",
       params: {
         ...ServerParams,
         message: Argument.String("message").pipe(
@@ -412,6 +440,7 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
         ),
         title: Flag.String("title").pipe(Flag.withDescription("Session title"), Flag.optional),
         thinking: Flag.Boolean("thinking").pipe(Flag.withDescription("Show thinking blocks"), Flag.withDefault(false)),
+        ...DeadParam,
         ...PermissionParams,
       },
     }),
@@ -533,16 +562,7 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
           Flag.optional,
         ),
         remote: Flag.Boolean("remote").pipe(
-          Flag.withDescription(
-            "Pair through the OpenTunnel remote address, enabling remote access if needed (exposes the server to the internet)",
-          ),
-          Flag.withDefault(false),
-        ),
-        yes: Flag.Boolean("yes").pipe(
-          Flag.withAlias("y"),
-          Flag.withDescription(
-            "Accept exposing the server to the internet when --remote enables remote access for the first time (required without an interactive terminal)",
-          ),
+          Flag.withDescription("Pair through the OpenTunnel remote address, enabling remote access if needed"),
           Flag.withDefault(false),
         ),
       },

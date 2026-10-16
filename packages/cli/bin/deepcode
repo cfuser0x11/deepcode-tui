@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export DEEPCODE_STANDALONE=1
+export DEEPCODE_AUTO_SHUTDOWN=1
+echo "[*] Init..."
+echo "[+] bun run --cwd \"$SCRIPT_DIR/..\" src/index.ts $*"
+bun run --cwd "$SCRIPT_DIR/.." src/index.ts "$@"
+EXIT_CODE=$?
+bun run --cwd "$SCRIPT_DIR/.." src/index.ts service stop >/dev/null 2>&1
+exit $EXIT_CODE

@@ -9,8 +9,6 @@ export default {
   "view.preview": "Preview",
   "view.source": "Source",
   "view.openInBrowser": "Open in browser",
-  "view.fullscreen": "Enter full screen",
-  "view.exitFullscreen": "Exit full screen",
   "view.binary": "Binary file · {{size}}",
   "view.table.rows.one": "{{count}} row",
   "view.table.rows.other": "{{count}} rows",

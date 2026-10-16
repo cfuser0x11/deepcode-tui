@@ -315,6 +315,15 @@ export const settings: Setting[] = [
     labels: ["off", "on"],
     keywords: ["debug bar", "developer tools"],
   },
+  {
+    title: "Background server",
+    category: "Server",
+    path: ["server", "background"],
+    default: false,
+    values: [false, true],
+    labels: ["off (closes on exit)", "on (runs in background)"],
+    keywords: ["server", "background", "daemon", "service", "close", "exit", "фоновый сервер"],
+  },
 ]
 
 export function settingID(setting: Setting) {

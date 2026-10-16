@@ -3,10 +3,10 @@ import { Marked } from "marked"
 export function createMarkdownBase() {
   return new Marked({
     renderer: {
-      link({ href, title, tokens }) {
+      link({ href, title, text }) {
         const titleAttr = title ? ` title="${title}"` : ""
 
-        return `<a href="${href}"${titleAttr} class="external-link" target="_blank" rel="noopener noreferrer">${this.parser.parseInline(tokens)}</a>`
+        return `<a href="${href}"${titleAttr} class="external-link" target="_blank" rel="noopener noreferrer">${text}</a>`
       },
     },
   })

@@ -7,6 +7,13 @@ export function selfCommand() {
   if (runtime !== "bun" && runtime !== "node" && runtime !== "nodejs") return [process.execPath]
   if (!entrypoint) throw new Error("Failed to resolve CLI entrypoint")
   if (runtime === "node" || runtime === "nodejs") return [process.execPath, ...nodeFlags(), entrypoint]
+  if (runtime === "bun") {
+    if (entrypoint.endsWith(".ts")) {
+      const cliRoot = path.dirname(path.dirname(entrypoint))
+      return [process.execPath, "run", "--cwd", cliRoot, entrypoint]
+    }
+    return [process.execPath, entrypoint]
+  }
   return [process.execPath, entrypoint]
 }
 

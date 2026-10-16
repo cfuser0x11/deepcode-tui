@@ -21,8 +21,11 @@ export const name = "write"
 
 // TODO: Revisit whether model-facing mutation schemas should prefer absolute `filePath` naming for trained-in compatibility after evaluating model behavior.
 export const Input = Schema.Struct({
-  path: Schema.String.annotate({
+  path: Schema.optional(Schema.String).annotate({
     description: "Path to the file to write to",
+  }),
+  filePath: Schema.optional(Schema.String).annotate({
+    description: "Alternative path to the file to write to",
   }),
   content: Schema.String.annotate({ description: "Content to write to the file" }),
 })
@@ -63,16 +66,56 @@ export const Plugin = {
           output: Output,
           execute: (input, context) =>
             Effect.gen(function* () {
+              let targetPath = (String(input.path || input.filePath || (input as Record<string, any>).file || "")).trim()
+              if (!targetPath) {
+                const commentMatch = (input.content || "").match(
+                  /(?:^|\n)\s*(?:\/\*+|\/{2,}|#|<!--)\s*([a-zA-Z0-9_.\-\\/]+\.[a-zA-Z0-9]+)/,
+                )
+                if (commentMatch) {
+                  targetPath = commentMatch[1].trim()
+                } else if (/<!DOCTYPE\s+html|<html[\s>]/i.test(input.content || "")) {
+                  targetPath = "index.html"
+                } else if (
+                  /(?:^|\n)\s*(?::root|\*|body|html|\.[a-zA-Z0-9_-]+)\s*\{[\s\S]*?(?:margin|padding|background|color|box-sizing):/i.test(
+                    input.content || "",
+                  )
+                ) {
+                  targetPath = "style.css"
+                } else if (/(?:assert\.|describe\(|test\(|it\()[\s\S]*?(?:passed|failed|expect)/i.test(input.content || "")) {
+                  targetPath = "test.js"
+                }
+              }
+              if (!targetPath) {
+                return yield* Effect.fail(
+                  new ToolFailure({ message: "No file path provided to write", error: new Error("Empty path") }),
+                )
+              }
               const source = {
                 type: "tool" as const,
                 messageID: context.messageID,
                 id: context.id,
               }
-              const target = yield* access.resolve({ path: input.path, kind: "file" })
+              const target = yield* access.resolve({ path: targetPath, kind: "file" })
               yield* access.authorizeExternal([target], context)
               const current = yield* FileMutation.readText(environment.files, target.absolute).pipe(
                 Effect.catchTag("Environment.NotFound", () => Effect.undefined),
               )
+              if (current && current.text.trim().length > 0 && input.content.trim().length === 0) {
+                return yield* Effect.fail(
+                  new ToolFailure({
+                    message: `Refused to overwrite existing file '${targetPath}' (${current.text.length} bytes) with empty content. Provide the full new content or use edit tool.`,
+                    error: new Error("Refused empty content overwrite"),
+                  }),
+                )
+              }
+              if (!current && input.content.trim().length === 0 && !targetPath.endsWith(".gitkeep")) {
+                return yield* Effect.fail(
+                  new ToolFailure({
+                    message: `Refused to create empty file '${targetPath}'. Provide file content when calling write.`,
+                    error: new Error("Empty file content"),
+                  }),
+                )
+              }
               const next = Bom.split(input.content)
               const preview = fileDiff(target.resource, current?.text ?? "", next.text, current ? "modified" : "added")
               yield* permission.assert({
@@ -92,7 +135,11 @@ export const Plugin = {
               return result
             }).pipe(
               Effect.map((output) => ({ output, content: toModelContent(output) })),
-              Effect.mapError((error) => new ToolFailure({ message: `Unable to write ${input.path}`, error })),
+              Effect.mapError((error) =>
+                error instanceof ToolFailure
+                  ? error
+                  : new ToolFailure({ message: `Unable to write ${input.path || input.filePath || ""}`, error }),
+              ),
             ),
         }),
       )

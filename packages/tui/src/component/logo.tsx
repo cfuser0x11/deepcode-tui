@@ -9,8 +9,12 @@ export function Logo() {
   const theme = useTheme()
   const dimensions = useTerminalDimensions()
 
-  const renderLine = (line: string, fg: RGBA, bold: boolean): JSX.Element[] => {
-    const shadow = tint(theme.background.base, fg, 0.25)
+  const deepFg = () => tint(theme.background.base, RGBA.fromHex("#3b82f6"), 0.65)
+  const deepShadow = () => tint(theme.background.base, deepFg(), 0.35)
+  const codeFg = () => tint(theme.background.base, theme.text.base, 0.55)
+  const codeShadow = () => tint(theme.background.base, codeFg(), 0.35)
+
+  const renderLine = (line: string, fg: RGBA, shadow: RGBA, bold: boolean): JSX.Element[] => {
     const attrs = bold ? TextAttributes.BOLD : undefined
     return Array.from(line).map((char) => {
       if (char === "_") {
@@ -53,23 +57,23 @@ export function Logo() {
     <box>
       {dimensions().height < 12 ? null : dimensions().width < 22 ? (
         <For each={go.right.slice(1)}>
-          {(line) => <box flexDirection="row">{renderLine(line, theme.text.base, true)}</box>}
+          {(line) => <box flexDirection="row">{renderLine(line, codeFg(), codeShadow(), false)}</box>}
         </For>
       ) : dimensions().width < 44 ? (
         <>
-          <For each={logo.left.slice(1)}>
-            {(line) => <box flexDirection="row">{renderLine(line, theme.text.muted, false)}</box>}
+          <For each={logo.left}>
+            {(line) => <box flexDirection="row">{renderLine(line, deepFg(), deepShadow(), false)}</box>}
           </For>
           <For each={logo.right}>
-            {(line) => <box flexDirection="row">{renderLine(line, theme.text.base, true)}</box>}
+            {(line) => <box flexDirection="row">{renderLine(line, codeFg(), codeShadow(), false)}</box>}
           </For>
         </>
       ) : (
         <For each={logo.left}>
           {(line, index) => (
             <box flexDirection="row" gap={1}>
-              <box flexDirection="row">{renderLine(line, theme.text.muted, false)}</box>
-              <box flexDirection="row">{renderLine(logo.right[index()], theme.text.base, true)}</box>
+              <box flexDirection="row">{renderLine(line, deepFg(), deepShadow(), false)}</box>
+              <box flexDirection="row">{renderLine(logo.right[index()], codeFg(), codeShadow(), false)}</box>
             </box>
           )}
         </For>

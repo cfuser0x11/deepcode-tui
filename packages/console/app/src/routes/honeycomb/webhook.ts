@@ -1,7 +1,7 @@
 import type { APIEvent } from "@solidjs/start/server"
 import { z } from "zod"
 import { Resource } from "@opencode/console-resource"
-import { timingSafeEqual } from "node:crypto"
+import { safeEqual } from "@opencode/console-core/util/crypto.js"
 
 const DISCORD_ALERT_ROLE_ID = "1520924666359713863"
 
@@ -102,10 +102,4 @@ export async function POST(input: APIEvent) {
   }
 
   return Response.json({ message: "sent" }, { status: 200 })
-}
-
-function safeEqual(a: string, b: string) {
-  const aBytes = new TextEncoder().encode(a)
-  const bBytes = new TextEncoder().encode(b)
-  return aBytes.length === bBytes.length && timingSafeEqual(aBytes, bBytes)
 }

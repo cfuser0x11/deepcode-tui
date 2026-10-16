@@ -581,4 +581,13 @@ describe("provider error messages", () => {
       ].map(providerErrorMessage),
     ).toEqual([undefined, undefined, undefined, undefined])
   })
+
+  test("classifies transient proxy session expiration as retryable ProviderInternal", () => {
+    const reason = classifyProviderFailure({
+      message: "Сессия DeepSeek устарела или не авторизована.",
+      status: 401,
+      rawBody: '{"error":{"message":"Сессия DeepSeek устарела или не авторизована."}}',
+    })
+    expect(reason._tag).toBe("ProviderInternal")
+  })
 })

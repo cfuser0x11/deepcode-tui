@@ -73,7 +73,8 @@ async function run(input: RunCommandInput, options: ExecutionOptions) {
   const root = options.root ?? process.env.PWD ?? process.cwd()
   const local = localDirectory(root)
   const directory = options.useServerDirectory ? undefined : (options.directory ?? local)
-  const message = mergeInput(formatMessage(input.message), process.stdin.isTTY ? undefined : await readStdin())
+  const cliMessage = formatMessage(input.message)
+  const message = cliMessage?.trim() ? cliMessage : (process.stdin.isTTY ? undefined : await readStdin())
   if (!message?.trim()) fail("You must provide a message")
   const files = await Promise.all(input.file.map((file) => prepareFile(file, root, options)))
   const prepared = { directory, message, files }

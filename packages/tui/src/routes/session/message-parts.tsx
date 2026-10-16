@@ -175,14 +175,20 @@ export function TextPart(props: {
   const theme = useTheme()
   const { currentSyntax: syntax } = useThemes()
   const plugins = usePlugin()
+  const content = createMemo(() => {
+    return props.part.text
+      .replace(/<\s*\/?\s*(?:[|\uFF5C]\s*)*DSML[^>]*>/gi, "")
+      .replace(/<\/?(?:tool_call|function_call|tool|parameter|param|working|end_working)\b[^>]*>/gi, "")
+      .trim()
+  })
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={content()}>
       <box paddingLeft={3} flexShrink={0}>
         {/* Configure custom nodes before parsing; apply content before streaming so completion keeps the final tokens. */}
         <markdown
           syntaxStyle={syntax()}
           renderNode={plugins.markdown()}
-          content={props.part.text.trim()}
+          content={content()}
           streaming={props.message.time.completed === undefined}
           internalBlockMode="top-level"
           tableOptions={{ style: "grid", cellPaddingX: 1 }}

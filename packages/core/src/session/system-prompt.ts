@@ -2,11 +2,27 @@ export * as SessionSystemPrompt from "./system-prompt.js"
 
 import PROMPT from "./runner/prompt/system.txt"
 
-export function make(tools: string[]) {
-  return render(PROMPT, tools)
+export function isDeadMode(options?: { deadMode?: boolean }) {
+  return Boolean(
+    options?.deadMode ||
+    process.env.DEEPCODE_DEAD_MODE === "1" ||
+    process.env.DEAD_MODE === "1"
+  )
 }
 
-export function render(prompt: string, tools: string[]) {
+export function make(tools: string[], options?: { deadMode?: boolean }) {
+  if (isDeadMode(options)) {
+    return ""
+  }
+  return render(PROMPT, tools, options)
+}
+
+export const DEAD_MODE_PROMPT = ""
+
+export function render(prompt: string, tools: string[], options?: { deadMode?: boolean }) {
+  if (isDeadMode(options)) {
+    return ""
+  }
   const instructions: string[] = []
   if (tools.includes("shell")) {
     instructions.push(
@@ -26,3 +42,4 @@ export function render(prompt: string, tools: string[]) {
   }
   return prompt.replace("${OPENCODE_TOOL_GUIDANCE}", instructions.join("\n"))
 }
+

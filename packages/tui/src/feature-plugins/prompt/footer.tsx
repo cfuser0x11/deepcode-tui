@@ -1,13 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js"
-import { contextUsage, formatContextUsage } from "../../util/session"
 import { useTerminalDimensions } from "@opentui/solid"
+import { Spinner } from "../../component/spinner"
 import { stringWidth } from "../../util/string-width"
-
-const money = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-})
 
 export function PromptFooter(props: {
   context: Plugin.Context
@@ -17,6 +12,10 @@ export function PromptFooter(props: {
 }) {
   const dimensions = useTerminalDimensions()
   const [liveHovered, setLiveHovered] = createSignal(false)
+  const isRunning = createMemo(() => {
+    if (!props.sessionID) return false
+    return props.context.data.session.status(props.sessionID) === "running"
+  })
   const subagents = createMemo(() => {
     if (!props.sessionID) return 0
     const count = props.context.data.session
@@ -31,21 +30,7 @@ export function PromptFooter(props: {
       .filter((shell) => shell.metadata.sessionID === props.sessionID).length
     return count ? `${count} shell${count === 1 ? "" : "s"}` : undefined
   })
-  const status = createMemo(() => {
-    if (!props.sessionID) return []
-    const session = props.context.data.session.get(props.sessionID)
-    if (!session) return []
-    const usage = contextUsage(
-      props.context.data.session.message.list(props.sessionID),
-      props.context.data.location.model.list(session.location),
-      session.revert?.messageID,
-    )
-    const cost = props.context.data.session.cost(props.sessionID)
-    return [
-      usage ? formatContextUsage(usage.tokens, usage.percent) : undefined,
-      cost > 0 ? money.format(cost) : undefined,
-    ].filter((item): item is string => Boolean(item))
-  })
+  const status = createMemo(() => [] as string[])
   const live = createMemo(() => Boolean(subagents() || shells()))
   const shortcut = (id: string) => props.context.keymap.shortcuts(id)[0]
   const layout = createMemo(() => {
@@ -62,8 +47,16 @@ export function PromptFooter(props: {
     <Switch>
       <Match when={props.mode === "normal"}>
         <Switch>
-          <Match when={live() || status().length > 0}>
-            <box flexDirection="row" flexShrink={props.showDetails && layout().usage ? 0 : 1} minWidth={0}>
+          <Match when={isRunning() || live() || status().length > 0}>
+            <box flexDirection="row" flexShrink={props.showDetails && layout().usage ? 0 : 1} minWidth={0} gap={1}>
+              <Show when={isRunning()}>
+                <box flexShrink={0}>
+                  <Spinner color={props.context.theme.text.muted}>Working…</Spinner>
+                </box>
+              </Show>
+              <Show when={isRunning() && live()}>
+                <text fg={props.context.theme.text.muted}> · </text>
+              </Show>
               <Show when={live()}>
                 <box
                   flexShrink={0}

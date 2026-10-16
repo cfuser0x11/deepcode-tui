@@ -44,6 +44,8 @@ export type Settings = {
   buffer?: number
   /** Tokens of recent conversation kept verbatim beside the summary. */
   keep: number
+  /** Compaction trigger threshold in tokens. Default: 80_000 for DeepSeek. */
+  threshold?: number
 }
 
 export type Editor = {
@@ -101,49 +103,50 @@ const TOOL_OUTPUT_MAX_CHARS = 1_250
 const IMAGE_TOKEN_ESTIMATE = 1_500
 const PDF_TOKEN_ESTIMATE = 2_000
 
-const SUMMARY_TEMPLATE = `You MUST use this format for your response (you may omit sections that aren't applicable). Do not include the <template> tags in your response.
-<template>
-## Objective
-- [one or two brief sentences describing what the user is trying to accomplish]
+const SUMMARY_TEMPLATE = `Output your summary in this exact format:
 
-## Requirements
-- [constraints, preferences, requirements, and scope boundaries stated by the user, or "(none)"]
+=== COMPACTED AGENT CONTEXT ===
+1. PRIMARY OBJECTIVE:
+- Original user goal, scope boundaries, and current active milestone.
 
-## Decisions
-- [decisions already made and why, or "(none)"]
+2. ARCHITECTURE & SYSTEM INVARIANTS (CUMULATIVE BASELINE):
+- Preserved foundational architecture: tech stack, DB schemas, entities, state management, API contracts, conventions.
+- CRITICAL: Never degrade or prune architectural invariants from previous checkpoints; accumulate and preserve them as the permanent project foundation.
 
-## Work State
-Break the objective into smaller goals and report which are completed, which are being worked on, and which are blocked.
-### Completed
-- [goals that have been completed; otherwise "(none)"]
+3. HISTORICAL PHASES & CHRONOLOGY (COMPLETED & FROZEN):
+- Chronological breakdown of completed epochs (e.g. Phase 1: Foundation & DB [COMPLETED], Phase 2: Core Services & Auth [COMPLETED]).
+- Key verified deliverables and passing test suites per phase.
+- Marked as FROZEN so the agent treats them strictly as historical context, never as active tasks.
 
-### Active
-- [goals currently being worked on; otherwise "(none)"]
+4. CURRENT WORKSPACE & ACTIVE IMPLEMENTATION PLAN:
+- Workspace state: modified/created files, uncommitted changes, running servers/ports, environment blockers.
+- Priority order for active work:
+  * [-] In progress: tasks currently being executed.
+  * [ ] Pending: remaining unstarted tasks for the current phase.
+  * (Do NOT repeat individual historical tasks here; completed milestones belong under Section 3).
 
-### Blocked
-- [anything blocking progress, and why; otherwise "(none)"]
+5. IMMEDIATE NEXT STEP:
+- Exact instruction on what the agent must execute next.
+- STRICT RULE: ONLY include unresolved work. Do NOT list questions that were already answered, commands/tools that have already completed, or tasks that are already done. If ready for input, state ready for next user directive.
+=== END CONTEXT ===`
 
-## Next Move
-1. [ordered list of next actions, or "(none)"]
-
-## Relevant Files
-List the files and directories, other than the current working directory, that another agent would need to open to continue this work. Include at most 15, most important first. Do not list every file that was read or changed. Include paths outside the current working directory when relevant. If none, write "(none)".
-- \`[file or directory path]\`: [brief reason it matters]
-
-## Important Context
-- [facts the next agent cannot continue without and cannot easily find on its own; or "(none)"]
-</template>`
-
-const SUMMARY_RULES = `Rules:
-- Keep each section concise. Use terse, single-line bullets, not prose paragraphs or nested lists.
-- Prefer short references over detailed restatement. It is fine to leave out information the next agent can recover from the code or the files listed above.
-- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers.
-- Carry forward only user questions or requests that remain unanswered or require further action. Do not repeat ones that newer history has answered or resolved. Preserve exact wording when carrying one forward.
-- Preserve consequential workflow state, including whether changes are uncommitted, committed, pushed, under review, or merged.
-- Do not mention the summary process or that context was compacted.`
+const SUMMARY_RULES = `RULES:
+- Be dense, factual, and strictly technical.
+- Architectural Preservation (Cumulative): Section 2 is an immutable, accumulating baseline. When updating a summary, retain all specific database models, table relationships, architectural patterns, type systems, and service boundaries from earlier checkpoints. Do not compress specific architectures into generic high-level summaries.
+- Chronological Phasing: Completed historical milestones belong in Section 3 as frozen/completed phases. This prevents chronological confusion: the agent clearly understands what was already built and tested versus what is currently being worked on.
+- Task Prioritization: Section 4 must ONLY focus on active work for the current iteration ([-] and [ ]). Do not clutter Section 4 with long lists of completed [x] items.
+- Strict Next Step Hygiene: If a user question was already answered, or a command/tool was already executed, it is RESOLVED. Never put resolved items, past answers, or already-executed actions into Section 5 (IMMEDIATE NEXT STEP).
+- Section 5 must reflect only the single next unfulfilled user directive or next pending implementation step.
+- Preserve all exact file paths, schema fields, function names, URLs, ports, and credentials.
+- Zero conversational fluff or introductory text.
+- Leave out instructions and setup the assistant was given rather than told by the user: repository conventions, instruction files such as AGENTS.md, and environment details like the session ID. The next agent receives current versions of all of these separately.
+- Preserve consequential workflow state, including whether changes are uncommitted, committed, pushed, or tested.`
 
 export const buildPrompt = (update: boolean, legacy = false) => {
   const shared = [
+    "You are the Context Compaction Engine for an autonomous coding agent.",
+    "Your mission is to distill the preceding conversation into a dense, precise, and actionable state summary.",
+    "The downstream model must be able to continue executing the task without any loss of context.",
     "Summarize only what the user and the assistant said and did. Leave out instructions and setup the assistant was given rather than told by the user: repository conventions, instruction files such as AGENTS.md, and environment details like the session ID. The next agent receives current versions of all of these separately.",
     SUMMARY_TEMPLATE,
     SUMMARY_RULES,
@@ -152,31 +155,28 @@ export const buildPrompt = (update: boolean, legacy = false) => {
   ]
   if (!update) {
     return [
-      "You MUST summarize the conversation above into a structured summary that will be given to another agent to resume the work.",
+      "Summarize the conversation above into the compacted agent context format.",
+      "Ensure Section 2 captures the complete architectural baseline (schemas, stack, conventions) so subsequent agents never lose system design context.",
+      "Clearly distinguish completed work (Section 3) from active/pending tasks (Section 4) and the single immediate next action (Section 5).",
       ...shared,
     ].join("\n\n")
   }
   return [
-    "Update the existing checkpoint in the conversation above into one consolidated summary.",
-    // Before #48058 (Sep 2026), summaries kept nearly everything: every file touched, per-edit changelogs,
-    // restated AGENTS.md conventions, and an "Additional Context" section that grew on every update. The
-    // preserve-first update prompt would carry that detail forward indefinitely, so a checkpoint from that
-    // template is rewritten once at the current level of detail. The rewrite uses the new headings, so later
-    // updates skip this. Remove once no session still in use has a latest checkpoint older than #48058.
+    "Update the existing compacted context in the conversation above into one consolidated summary.",
     ...(legacy
       ? [
           "The existing checkpoint was written with an earlier format that recorded far more detail than this one asks for. Rewrite it at the level of detail described below rather than carrying its detail forward. Keep its requirements, decisions, and open questions; they came from earlier conversation with the user.",
         ]
       : []),
-    "Newer history always takes precedence over the existing checkpoint. Preserve previous information unless newer history clearly contradicts, supersedes, resolves, or makes it stale. If something is no longer relevant to continuing the work, you may remove it.",
-    "Incorporate newer requirements, decisions, progress, and context. Reconcile Work State and Next Move: move completed work out of Active, remove resolved blockers and answered questions, and preserve unresolved or pending work.",
-    "Return only the updated Markdown sections. Do not reproduce the `<conversation-checkpoint>`, `<summary>`, or `<recent-context>` wrapper tags from the previous checkpoint.",
+    "CUMULATIVE ARCHITECTURE: Preserve all architectural decisions, database models, patterns, and constraints established in earlier checkpoints under Section 2. Do not prune or over-compress foundational architecture.",
+    "CHRONOLOGY: Roll newly completed milestones into Section 3 as completed phases.",
+    "TASK RECONCILIATION: In Section 4 and Section 5, update task status, remove resolved blockers, drop completed questions/actions from Next Step, and preserve only unresolved or pending work.",
     ...shared,
   ].join("\n\n")
 }
 
 const NUDGE =
-  "The previous response did not fill in the required summary template. Do not call tools. Return the summary as text using the exact section headings from the template."
+  "The previous response did not fill in the required summary template. Do not call tools. Return the summary as text starting with === COMPACTED AGENT CONTEXT === and the exact numbered sections."
 
 /** Summaries written with the previous template carry this catch-all heading. */
 const LEGACY_HEADING = "## Additional Context"
@@ -208,7 +208,7 @@ export const layer = Layer.effect(
 
       // Only the user compacts when automatic compaction is off, overflow included.
       if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
-      if (trigger.reason === "auto" && !due(context, calculateCeiling(context.model.limit, settings.buffer)))
+      if (trigger.reason === "auto" && !due(context, calculateCeiling(context.model, settings.buffer, settings.threshold, context.messages)))
         return { status: "skipped" }
       const native = context.model.compaction?.type === "native"
       const agent = native ? undefined : yield* agents.get(Agent.ID.make("compaction"))
@@ -218,11 +218,11 @@ export const layer = Layer.effect(
             .resolve({ ...context.session, model: agent.model }, catalog.available)
             .pipe(Effect.orElseSucceed(() => undefined)))) ??
         context.model
-      const ceiling = calculateCeiling(model.limit, settings.buffer)
+      const ceiling = calculateCeiling(model, settings.buffer, settings.threshold, context.messages)
       // An unknown window never triggers auto compaction, but the compaction request still needs a size to aim for.
       const cap = Number.isFinite(ceiling)
         ? ceiling
-        : calculateCeiling({ ...model.limit, context: UNKNOWN_WINDOW }, settings.buffer)
+        : calculateCeiling({ ...model, limit: { ...model.limit, context: UNKNOWN_WINDOW } }, settings.buffer, settings.threshold, context.messages)
       // The provider just rejected this context, so the estimate ran low; the first attempt already aims below it.
       const budget =
         trigger.reason === "overflow" ? Math.min(cap, Math.floor(estimateContext(context) * SHRINK_STEPS[0])) : cap
@@ -280,8 +280,14 @@ export const layer = Layer.effect(
 
       const previous = previousCompaction(context.messages)
       const prompt = buildPrompt(previous !== undefined, previous?.summary.includes(LEGACY_HEADING) ?? false)
-      const headings = SUMMARY_TEMPLATE.split("\n").filter((line) => line.startsWith("##"))
-      const filled = (text: string) => text.split("\n").some((line) => headings.includes(line.trim()))
+      const headings = SUMMARY_TEMPLATE.split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith("##") || line.startsWith("===") || /^\d+\./.test(line))
+      const filled = (text: string) =>
+        text.includes("COMPACTED AGENT CONTEXT") ||
+        text.includes("PRIMARY OBJECTIVE") ||
+        text.includes("## Objective") ||
+        text.split("\n").some((line) => headings.includes(line.trim()))
       const prepared = yield* prepare(context, split.older, budget)
 
       // Hooks saw the request without the summary prompt, so it is appended here. A reply that ignores the
@@ -498,8 +504,33 @@ export const layer = Layer.effect(
         Token.estimate(note(exchanges.length))
       const kept = exchanges.slice(oldestToDrop(exchanges, (text) => Token.estimate(text) + 1, room))
       if (kept.length === 0) return undefined
+      const fullText = note(exchanges.length - kept.length) + kept.join("\n\n")
+
+      const CHUNK_SIZE = 100_000
+      if (fullText.length <= CHUNK_SIZE) {
+        return LLMRequest.update(request, {
+          messages: [...lead, Message.user(fullText)],
+        })
+      }
+
+      // Chunk large context transcript into <=100k character turns to stay within provider message limits
+      const chunkMessages: Message[] = []
+      const totalParts = Math.ceil(fullText.length / CHUNK_SIZE)
+      let offset = 0
+      let partIdx = 1
+      while (offset < fullText.length) {
+        const slice = fullText.slice(offset, offset + CHUNK_SIZE)
+        chunkMessages.push(Message.user(`[CONTEXT HISTORY PART ${partIdx}/${totalParts}]:\n${slice}`))
+        if (partIdx < totalParts) {
+          chunkMessages.push(
+            Message.assistant(`Part ${partIdx}/${totalParts} received. Please provide the remaining context.`),
+          )
+        }
+        offset += CHUNK_SIZE
+        partIdx++
+      }
       return LLMRequest.update(request, {
-        messages: [...lead, Message.user(note(exchanges.length - kept.length) + kept.join("\n\n"))],
+        messages: [...lead, ...chunkMessages],
       })
     }
 
@@ -681,9 +712,27 @@ export const node = makeLocationNode({
 })
 
 /** History loads from the latest completed compaction, so a previous one is always the first message. */
-const previousCompaction = (messages: ReadonlyArray<SessionMessage.Info>) => {
+export const previousCompaction = (messages: ReadonlyArray<SessionMessage.Info>) => {
   const [first] = messages
-  return first?.type === "compaction" && first.status === "completed" ? first : undefined
+  if (first?.type === "compaction" && first.status === "completed") return first
+  return messages.find(
+    (message): message is SessionMessage.CompactionCompleted =>
+      message.type === "compaction" && message.status === "completed",
+  )
+}
+
+export const previousCompactionTokens = (
+  messages?: ReadonlyArray<SessionMessage.Info>,
+  modelRef?: SessionContext.Loaded["model"]["ref"],
+): number => {
+  if (!messages || messages.length === 0) return 0
+  const prev = previousCompaction(messages)
+  if (!prev) return 0
+  if (modelRef) {
+    const llmMessages = toLLMMessages([prev], modelRef)
+    return llmMessages.reduce((sum, msg) => sum + estimateMessage(msg), 0)
+  }
+  return Token.estimate(prev.summary) + Token.estimate(prev.recent) + 50
 }
 
 const transcript = (context: SessionContext.Loaded, messages: ReadonlyArray<SessionMessage.Info>) =>
@@ -780,11 +829,11 @@ const messageToText = (message: SessionMessage.Info): string => {
           if (part.type === "reasoning") return part.text ? [`[Assistant reasoning]: ${part.text}`] : []
 
           const input = typeof part.state.input === "string" ? part.state.input : JSON.stringify(part.state.input)
-          const call = `[Assistant tool call]: ${part.name}(${input})`
+          const call = `[Action: ${part.name}]: ${input}`
           if (part.state.status === "completed") {
-            return [call, `[Tool result]: ${truncateToolOutput(serializeToolContent(part.state.content))}`]
+            return [call, `[Result]: ${truncateToolOutput(serializeToolContent(part.state.content))}`]
           }
-          if (part.state.status === "error") return [call, `[Tool error]: ${part.state.error.message}`]
+          if (part.state.status === "error") return [call, `[Error]: ${part.state.error.message}`]
           return [call]
         })
         .join("\n")
@@ -827,7 +876,7 @@ const flattenMessage = (message: Message) => {
       if (part.type === "text")
         return part.text ? [`[${message.role === "user" ? "User" : "Assistant"}]: ${part.text}`] : []
       if (part.type === "media") return [`[${part.media.mediaType} omitted]`]
-      if (part.type === "tool-call") return [`[Assistant tool call]: ${part.name}(${JSON.stringify(part.input) ?? ""})`]
+      if (part.type === "tool-call") return [`[Action: ${part.name}]: ${JSON.stringify(part.input) ?? ""}`]
       if (part.type !== "tool-result") return []
       const result = part.result
       const output =
@@ -836,7 +885,7 @@ const flattenMessage = (message: Message) => {
           : typeof result.value === "string"
             ? result.value
             : (JSON.stringify(result.value) ?? "")
-      const label = result.type === "error" ? "Tool error" : "Tool result"
+      const label = result.type === "error" ? "Error" : "Result"
       return [`[${label}]: ${truncateToolOutput(output)}`]
     })
     .join("\n")
@@ -902,10 +951,50 @@ export const estimatePrompt = (context: SessionContext.Loaded) => {
  * is more. The summary request is capped at the same size, so its output limit is whatever the reserve leaves. A window
  * too small to give up `RESERVE_MIN` keeps 10%.
  */
-const calculateCeiling = (limit: SessionContext.Loaded["model"]["limit"], buffer: number | undefined) => {
+export const calculateCeiling = (
+  modelOrLimit:
+    | SessionContext.Loaded["model"]
+    | { limit: SessionContext.Loaded["model"]["limit"] }
+    | SessionContext.Loaded["model"]["limit"],
+  buffer: number | undefined,
+  threshold?: number,
+  messages?: ReadonlyArray<SessionMessage.Info>,
+) => {
+  const model = "limit" in modelOrLimit ? modelOrLimit : { limit: modelOrLimit }
+  const provider =
+    ("ref" in model && model.ref && "providerID" in model.ref ? (model.ref.providerID as string) : undefined) ??
+    ("model" in model && (model as any).model && "provider" in (model as any).model ? ((model as any).model.provider as string) : undefined) ??
+    ("providerID" in model ? (model.providerID as string) : undefined)
+  const modelID =
+    ("ref" in model && model.ref && "id" in model.ref ? (model.ref.id as string) : undefined) ??
+    ("model" in model && (model as any).model && "id" in (model as any).model ? ((model as any).model.id as string) : undefined) ??
+    ("id" in model ? (model.id as string) : undefined)
+
+  const isDeepSeek = provider === "deepseek" || modelID?.toLowerCase().includes("deepseek")
+  const modelThreshold =
+    threshold ??
+    ("settings" in model ? (model.settings as any)?.compactThreshold ?? (model.settings as any)?.threshold : undefined) ??
+    (isDeepSeek ? 80_000 : undefined)
+
+  const modelRef = "ref" in model && model.ref ? model.ref : undefined
+  const checkpointTokens = previousCompactionTokens(messages, modelRef)
+
+  if (modelThreshold !== undefined && modelThreshold > 0) {
+    const window = model.limit.input || model.limit.context
+    const effectiveCeiling = modelThreshold + checkpointTokens
+    if (window > 0) {
+      const maxAllowed =
+        buffer !== undefined
+          ? window - buffer
+          : window - Math.max(Math.floor(window * 0.1), window >= 2 * RESERVE_MIN ? RESERVE_MIN : 0)
+      return Math.min(effectiveCeiling, Math.max(modelThreshold, maxAllowed))
+    }
+    return effectiveCeiling
+  }
+
   // Unknown limits are reported as 0. An unknown input limit falls back to the context window; with no window at
   // all, only a provider rejection can limit the request.
-  const window = limit.input || limit.context
+  const window = model.limit.input || model.limit.context
   if (window <= 0) return Number.POSITIVE_INFINITY
   if (buffer !== undefined) return window - buffer
   return window - Math.max(Math.floor(window * 0.1), window >= 2 * RESERVE_MIN ? RESERVE_MIN : 0)

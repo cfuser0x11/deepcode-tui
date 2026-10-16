@@ -123,3 +123,4 @@ export type {
   Definition as ProviderPackageDefinition,
   Settings as ProviderPackageSettings,
 } from "./provider-package.js"
+export { cleanModelText, stripToolTags } from "./protocols/utils/dsml-parser.js"

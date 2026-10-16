@@ -1,11 +1,15 @@
 import type { APIEvent } from "@solidjs/start/server"
-import { buildOptionsResponse } from "../../util/modelsHandler"
-import { proxyInference } from "~/lib/inference-proxy"
+import { ZenData } from "@opencode/console-core/model.js"
+import { buildModelsResponse, buildOptionsResponse } from "../../util/modelsHandler"
+import { inferenceUnavailable, proxyInference } from "~/lib/inference-proxy"
 
 export async function OPTIONS(_input: APIEvent) {
   return buildOptionsResponse()
 }
 
-export function GET(input: APIEvent) {
-  return proxyInference(input.request)
+export async function GET(input: APIEvent) {
+  const response = await proxyInference(input.request).catch(inferenceUnavailable)
+  if (response) return response
+  const models = Object.keys(ZenData.list("lite").models)
+  return buildModelsResponse(models)
 }

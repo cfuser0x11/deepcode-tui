@@ -1,5 +1,5 @@
 import "./index.css"
-import { useSearchParams } from "@solidjs/router"
+import { createAsync, query, useSearchParams } from "@solidjs/router"
 import { Title, Meta } from "@solidjs/meta"
 import { For, Show } from "solid-js"
 //import { HttpHeader } from "@solidjs/start"
@@ -10,6 +10,7 @@ import { Footer } from "~/component/footer"
 import { Header } from "~/component/header"
 import { GoPlanChart } from "~/component/go-plan-chart"
 import { config } from "~/config"
+import { getLastSeenWorkspaceID } from "../workspace/common"
 import {
   IconAlibaba,
   IconAnthropic,
@@ -30,6 +31,11 @@ import { useI18n } from "~/context/i18n"
 import { useLanguage } from "~/context/language"
 import { LocaleLinks } from "~/component/locale-links"
 import { goUsageLimits } from "~/lib/language"
+
+const checkLoggedIn = query(async () => {
+  "use server"
+  return await getLastSeenWorkspaceID().catch(() => undefined)
+}, "checkLoggedIn.get")
 
 const models = [
   { name: "Space Bunny", training: "go.faq.a5.notUsed", retention: "go.faq.a5.retention0" },
@@ -66,6 +72,7 @@ const models = [
 ] as const
 
 export default function Home() {
+  const workspaceID = createAsync(() => checkLoggedIn())
   const subscribeUrl = "https://opencode.ai/console/go"
   const i18n = useI18n()
   const language = useLanguage()
@@ -91,6 +98,7 @@ export default function Home() {
         content={`${i18n.t("go.meta.description")} ${i18n.t("go.plans.plus.description")}`}
       />
       <Meta name="twitter:image" content="/social-share-black.png" />
+      <Meta name="opencode:auth" content={workspaceID() ? "true" : "false"} />
 
       <div data-component="container">
         <Header go hideGetStarted />

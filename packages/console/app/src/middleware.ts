@@ -1,6 +1,6 @@
 import { createMiddleware } from "@solidjs/start/middleware"
-import { Resource } from "@opencode/console-resource"
 import { LOCALE_HEADER, cookie, fromPathname, strip } from "~/lib/language"
+import { normalizeReferralCode, referralCookie } from "~/lib/referral-invite"
 import { sanitizeServerActionRequest } from "~/lib/server-action"
 
 export default createMiddleware({
@@ -17,11 +17,7 @@ export default createMiddleware({
       event.response.headers.append("set-cookie", cookie(locale))
     }
 
-    // The legacy dashboard and its sign-in moved to the new Console.
-    if (/^\/(auth|workspace)(\/|$)/.test(url.pathname) && Resource.ConsoleMigration.consoleUrl)
-      return new Response(null, {
-        status: 302,
-        headers: { Location: `${Resource.ConsoleMigration.consoleUrl}/login`, "Cache-Control": "no-store" },
-      })
+    const referralCode = normalizeReferralCode(url.searchParams.get("ref"))
+    if (referralCode) event.response.headers.append("set-cookie", referralCookie(referralCode))
   },
 })

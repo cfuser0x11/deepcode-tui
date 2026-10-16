@@ -2,7 +2,6 @@ import { createMemo, createSignal } from "solid-js"
 import { useLocal } from "../context/local"
 import { DialogSelect } from "../ui/dialog-select"
 import { useDialog } from "../ui/dialog"
-import { DialogIntegration } from "./dialog-integration"
 import { DialogVariant } from "./dialog-variant"
 import * as fuzzysort from "fuzzysort"
 import { useConnected } from "./use-connected"
@@ -142,18 +141,6 @@ export function DialogModel(props: { providerID?: string }) {
     <DialogSelect<ReturnType<typeof options>[number]["value"]>
       options={options()}
       actions={[
-        {
-          command: "model.dialog.provider",
-          title: connected() ? "Connect an integration" : "View all integrations",
-          selection: "none",
-          onTrigger() {
-            dialog.replace(() => (
-              <DialogIntegration
-                onConnected={(providerID) => dialog.replace(() => <DialogModel providerID={providerID} />)}
-              />
-            ))
-          },
-        },
         {
           command: "model.dialog.favorite",
           title: "Favorite",

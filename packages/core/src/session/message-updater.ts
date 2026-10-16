@@ -1,5 +1,6 @@
 import { castDraft, produce, type WritableDraft } from "immer"
 import { DateTime, Effect, Match, pipe, Schema } from "effect"
+import { stripToolTags } from "@opencode/ai"
 import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 
@@ -295,7 +296,7 @@ export function update(adapter: Adapter, event: SessionEvent.DurableEvent) {
         return updateOwnedAssistant(event.data.assistantMessageID, (draft) => {
           const match = latestText(draft)
           if (match) {
-            match.text = event.data.text
+            match.text = stripToolTags(event.data.text)
             match.state = castDraft(event.data.state)
           }
         })

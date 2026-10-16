@@ -42,6 +42,9 @@ export function resolveModelVariant(input: VariantInput) {
 
 export function cycleModelVariant(input: VariantInput) {
   const current = resolveModelVariant(input)
+  if (input.variants.length === 2 && input.variants.includes("none") && input.variants.includes("thinking")) {
+    return current === "thinking" ? "none" : "thinking"
+  }
 
   return input.variants[current ? input.variants.indexOf(current) + 1 : 0]
 }

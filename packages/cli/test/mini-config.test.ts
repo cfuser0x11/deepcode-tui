@@ -40,6 +40,7 @@ test("mini handler passes resolved CLI keybinds to the runtime", async () => {
     await Effect.runPromise(
       handler({
         server: Option.some(server.url.toString()),
+        dead: false,
         standalone: false,
         continue: false,
         session: Option.none(),

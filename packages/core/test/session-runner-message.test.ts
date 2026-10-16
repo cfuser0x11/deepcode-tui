@@ -232,6 +232,79 @@ Earlier work
     ])
   })
 
+  test("bounds oversized recent context in a checkpoint to fit provider limits", () => {
+    const hugeRecent = "x".repeat(150_000)
+    const [checkpoint] = toLLMMessages(
+      [
+        SessionMessage.Compaction.make({
+          id: id("compaction"),
+          type: "compaction",
+          status: "completed",
+          reason: "auto",
+          summary: "Earlier work",
+          recent: hugeRecent,
+          time: { created },
+        }),
+      ],
+      model,
+    )
+
+    const text = (checkpoint?.content[0] as { type: "text"; text: string }).text
+    expect(text.length).toBeLessThanOrEqual(120_000)
+    expect(text).toContain("<summary>\nEarlier work\n</summary>")
+    expect(text).toContain("<recent-context>")
+  })
+
+  test("compacted agent context format includes recent context and assistant ack", () => {
+    const messages = toLLMMessages(
+      [
+        SessionMessage.Compaction.make({
+          id: id("compaction"),
+          type: "compaction",
+          status: "completed",
+          reason: "auto",
+          summary: "=== COMPACTED AGENT CONTEXT ===\n1. PRIMARY OBJECTIVE:\nDo work\n=== END CONTEXT ===",
+          recent: "[User]: Please make some placeholder SVGs",
+          time: { created },
+        }),
+      ],
+      model,
+    )
+
+    expect(messages.length).toBe(2)
+    expect(messages[0].role).toBe("user")
+    const userText = (messages[0].content[0] as { type: "text"; text: string }).text
+    expect(userText).toContain("[COMPACTED AGENT CONTEXT]")
+    expect(userText).toContain("[RECENT CONTEXT]")
+    expect(userText).toContain("[User]: Please make some placeholder SVGs")
+    expect(messages[1].role).toBe("assistant")
+    expect(messages[1].id).toBe(id("compaction_ack"))
+  })
+
+  test("compacted agent context format omits recent context section when recent is empty", () => {
+    const messages = toLLMMessages(
+      [
+        SessionMessage.Compaction.make({
+          id: id("compaction"),
+          type: "compaction",
+          status: "completed",
+          reason: "auto",
+          summary: "=== COMPACTED AGENT CONTEXT ===\n1. PRIMARY OBJECTIVE:\nDo work\n=== END CONTEXT ===",
+          recent: "",
+          time: { created },
+        }),
+      ],
+      model,
+    )
+
+    expect(messages.length).toBe(2)
+    expect(messages[0].role).toBe("user")
+    const userText = (messages[0].content[0] as { type: "text"; text: string }).text
+    expect(userText).toContain("[COMPACTED AGENT CONTEXT]")
+    expect(userText).not.toContain("[RECENT CONTEXT]")
+    expect(messages[1].role).toBe("assistant")
+  })
+
   describe("model-switched", () => {
     const ref = (variant?: string) =>
       Model.Ref.make({

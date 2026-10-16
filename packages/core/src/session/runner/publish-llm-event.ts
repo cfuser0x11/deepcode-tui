@@ -1,4 +1,4 @@
-import { type LLMEvent, type ProviderMetadata, type ToolResultValue } from "@opencode/ai"
+import { type LLMEvent, type ProviderMetadata, type ToolResultValue, stripToolTags } from "@opencode/ai"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { RelativePath } from "@opencode/schema/schema"
@@ -43,6 +43,11 @@ export interface StepRecord {
     readonly providerState?: SessionMessage.ProviderState
     readonly tokens: ReturnType<typeof SessionUsage.tokens>
   }
+  readonly hasEndWorking: boolean
+  readonly hasTools: boolean
+  readonly assistantText: string
+  readonly reasoningText?: string
+  readonly toolCalls?: ReadonlyArray<{ readonly name: string; readonly input?: unknown }>
   readonly needsContinuation: boolean
 }
 
@@ -208,25 +213,33 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     return { start, append, end, flush, publishPending, has: (id: string) => chunks.has(id) }
   }
 
+  let accumulatedAssistantText = ""
+  let accumulatedReasoningText = ""
+  const accumulatedToolCalls: Array<{ readonly name: string; readonly input?: unknown }> = []
+
   const text = fragments(
     "text",
     (_textID, value, ordinal, state) =>
       Effect.gen(function* () {
+        const cleanValue = stripToolTags(value)
+        accumulatedAssistantText += cleanValue
         yield* bus.publish(SessionEvent.Text.Ended, {
           sessionID: input.sessionID,
           assistantMessageID: yield* currentAssistantMessageID(),
           ordinal,
-          text: value,
+          text: cleanValue,
           state,
         })
       }),
     (_textID, value, ordinal) =>
       Effect.gen(function* () {
+        const cleanDelta = stripToolTags(value)
+        if (!cleanDelta) return
         yield* bus.publish(SessionEvent.Text.Delta, {
           sessionID: input.sessionID,
           assistantMessageID: yield* currentAssistantMessageID(),
           ordinal,
-          delta: value,
+          delta: cleanDelta,
         })
       }),
     true,
@@ -235,6 +248,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     "reasoning",
     (_reasoningID, value, ordinal, state) =>
       Effect.gen(function* () {
+        accumulatedReasoningText += value
         yield* bus.publish(SessionEvent.Reasoning.Ended, {
           sessionID: input.sessionID,
           assistantMessageID: yield* currentAssistantMessageID(),
@@ -469,6 +483,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         if (tool.called) return yield* Effect.die(new Error(`Duplicate tool call: ${event.id}`))
         tool.called = true
         tool.providerExecuted = event.providerExecuted === true
+        accumulatedToolCalls.push({ name: event.name, input: event.input })
         yield* bus.publish(SessionEvent.Tool.Called, {
           sessionID: input.sessionID,
           assistantMessageID,
@@ -611,16 +626,24 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     hasProviderError: () => providerFailed,
     hasStarted: () => stepStarted,
     /** Immutable snapshot of everything recorded for this step so far. */
-    record: (): StepRecord => ({
-      outputStarted,
-      providerFailed,
-      failure: stepFailure,
-      finish: stepSettlement,
-      needsContinuation: Iterable.some(
+    record: (): StepRecord => {
+      const hasTools = Iterable.some(
         tools.values(),
         (tool) => !tool.providerExecuted && (tool.called || tool.settled),
-      ),
-    }),
+      )
+      return {
+        outputStarted,
+        providerFailed,
+        failure: stepFailure,
+        finish: stepSettlement,
+        hasEndWorking: /<(?:end_working|\/working)>/i.test(accumulatedAssistantText),
+        hasTools,
+        assistantText: accumulatedAssistantText,
+        reasoningText: accumulatedReasoningText,
+        toolCalls: accumulatedToolCalls,
+        needsContinuation: hasTools,
+      }
+    },
     startAssistant,
     streamed,
   }

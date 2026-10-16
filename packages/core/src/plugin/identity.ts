@@ -20,6 +20,12 @@ export const Plugin = define({
   effect: Effect.fn("IdentityPlugin")(function* (ctx) {
     const hook = (event: SessionHooks["context"]) =>
       Effect.gen(function* () {
+        const isDead = Boolean(
+          event.model.id.endsWith("-dead") ||
+          process.env.DEEPCODE_DEAD_MODE === "1" ||
+          process.env.DEAD_MODE === "1",
+        )
+        if (isDead) return
         const model =
           (yield* ctx.model.list()).data.find(
             (model) => model.providerID === event.model.providerID && model.id === event.model.id,

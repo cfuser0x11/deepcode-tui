@@ -261,7 +261,12 @@ const layer = Layer.effect(
         const value = yield* read()
         const requested = value.data.defaultModel
         const model = requested && value.byProvider.get(requested.providerID)?.get(requested.modelID)
-        return model?.enabled ? model : value.available.find(supportsText)
+        if (model?.enabled) return model
+        const deepseek = value.available.find(
+          (candidate) => candidate.providerID === "deepseek" && supportsText(candidate),
+        )
+        if (deepseek) return deepseek
+        return value.available.find(supportsText)
       }),
       small: Effect.fn("Model.small")(function* (providerID) {
         const value = yield* read()

@@ -104,19 +104,30 @@ export const baseTranscript = (input: {
   readonly initial: string
   readonly messages: ReadonlyArray<SessionMessage.Info>
 }) => {
+  const isDead = Boolean(
+    input.model.model.id.endsWith("-dead") ||
+    input.model.model.route.defaults?.headers?.["x-dead-mode"] === "true" ||
+    process.env.DEEPCODE_DEAD_MODE === "1" ||
+    process.env.DEAD_MODE === "1",
+  )
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
   return {
     providerMetadataKey,
-    system: [
-      input.agent.system
-        ? input.agent.system
-        : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name)),
-      input.initial,
-    ]
-      .filter((part) => part.length > 0)
-      .map(SystemPart.make),
+    system: isDead
+      ? []
+      : [
+          input.agent.system
+            ? input.agent.system
+            : SessionSystemPrompt.make(input.tools.definitions.map((tool) => tool.name), {
+                deadMode: false,
+              }),
+          input.initial,
+        ]
+          .filter((part) => part.length > 0)
+          .map(SystemPart.make),
     messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey),
   }
+
 }
 
 const mimeToModality = (mime: string) => {
@@ -276,6 +287,12 @@ export const layer = Layer.effect(
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
       const affinity = SessionAffinity.get(session)
+      const isDead = Boolean(
+        model.model.id.endsWith("-dead") ||
+        model.model.route.defaults?.headers?.["x-dead-mode"] === "true" ||
+        process.env.DEEPCODE_DEAD_MODE === "1" ||
+        process.env.DEAD_MODE === "1",
+      )
       const base = LLM.request({
         model: model.model,
         http: {
@@ -293,8 +310,9 @@ export const layer = Layer.effect(
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
-        system: shaped.system,
+        system: isDead ? [] : shaped.system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
+
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,

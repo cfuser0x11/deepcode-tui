@@ -4,7 +4,7 @@ import { open } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { monitorEventLoopDelay } from "node:perf_hooks"
-import { createMemo, createResource, createSignal, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
 import { useClient } from "../context/client"
 import { useConfig } from "../config"
 import { useData } from "../context/data"
@@ -15,14 +15,16 @@ import { useTheme, useThemes } from "../context/theme"
 import { DevTools } from "../devtools"
 import { useDialog } from "../ui/dialog"
 import { DialogExperiments } from "./dialog-experiments"
+import { DialogThemeList } from "./dialog-theme-list"
 import { usePlugin } from "../plugin/context"
 import { errorMessage } from "../util/error"
+import { contextUsage, lastAssistantWithUsage } from "../util/session"
 
 const graphWidth = 23
 const sampleIntervalMilliseconds = 2_000
 const sampleRetentionMilliseconds = 30_000
 const statusWindowMilliseconds = 6_000
-type Panel = "server" | "theme" | "tools" | "ui"
+type Panel = "server" | "theme" | "tools" | "ui" | "tokens"
 type ProcessSample = Readonly<{ cpu: number; memory: number; delay: number; time: number }>
 export type RuntimeStatus = "normal" | "medium" | "high"
 
@@ -79,9 +81,173 @@ export function DevToolsBar() {
   const nextMode = () => (mode() === "dark" ? "light" : "dark")
   const canSwitchMode = () => supports(nextMode())
   const runtime = createMemo(() => runtimeStatus(frontendSamples()))
-  const timing = () => config.data.debug?.timing ?? false
-  const turnTokens = () => config.data.debug?.turn_tokens ?? false
-  const verboseTurnTokens = () => turnTokens() === "verbose"
+
+  const [localTiming, setLocalTiming] = createSignal(config.data.debug?.timing ?? false)
+  const [localTurnTokens, setLocalTurnTokens] = createSignal<boolean | "verbose">(config.data.debug?.turn_tokens ?? false)
+  const [localTps, setLocalTps] = createSignal(Boolean(config.data.session?.tps))
+
+  createEffect(() => {
+    setLocalTiming(config.data.debug?.timing ?? false)
+  })
+  createEffect(() => {
+    setLocalTurnTokens(config.data.debug?.turn_tokens ?? false)
+  })
+  createEffect(() => {
+    setLocalTps(Boolean(config.data.session?.tps))
+  })
+
+  const timing = () => localTiming()
+  const turnTokens = () => localTurnTokens()
+  const verboseTurnTokens = () => localTurnTokens() === "verbose"
+  const tps = () => localTps()
+
+  const toggleTiming = () => {
+    const next = !localTiming()
+    setLocalTiming(next)
+    void config.update((draft) => {
+      draft.debug = { ...draft.debug, timing: next }
+    }).catch(() => {})
+  }
+
+  const toggleTurnTokens = () => {
+    const next = !Boolean(localTurnTokens())
+    setLocalTurnTokens(next)
+    void config.update((draft) => {
+      draft.debug = { ...draft.debug, turn_tokens: next }
+    }).catch(() => {})
+  }
+
+  const toggleVerboseTurnTokens = () => {
+    const next = localTurnTokens() === "verbose" ? true : "verbose"
+    setLocalTurnTokens(next)
+    void config.update((draft) => {
+      draft.debug = { ...draft.debug, turn_tokens: next }
+    }).catch(() => {})
+  }
+
+  const toggleTps = () => {
+    const next = !localTps()
+    setLocalTps(next)
+    void config.update((draft) => {
+      draft.session = { ...draft.session, tps: next }
+    }).catch(() => {})
+  }
+
+  const toggleDebugOverlay = () => {
+    renderer.toggleDebugOverlay()
+    setDebugOverlay(renderer.debugOverlay.enabled)
+  }
+
+  const sessionID = createMemo(() => (route.data.type === "session" ? route.data.sessionID : undefined))
+  const sessionMessages = createMemo(() => (sessionID() ? data.session.message.list(sessionID()!) : []))
+  const sessionInfo = createMemo(() => (sessionID() ? data.session.get(sessionID()!) : undefined))
+  const models = createMemo(() => data.location.model.list(sessionInfo()?.location))
+  const lastAssistant = createMemo(() => lastAssistantWithUsage(sessionMessages(), sessionInfo()?.revert?.messageID))
+  const usage = createMemo(() => contextUsage(sessionMessages(), models(), sessionInfo()?.revert?.messageID))
+
+  const latestTokens = createMemo(() => {
+    const last = lastAssistant()
+    if (!last?.tokens) {
+      return { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0, model: undefined }
+    }
+    const t = last.tokens
+    const total =
+      (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0) + (t.cache?.read ?? 0) + (t.cache?.write ?? 0)
+    return {
+      input: t.input ?? 0,
+      output: t.output ?? 0,
+      reasoning: t.reasoning ?? 0,
+      cacheRead: t.cache?.read ?? 0,
+      cacheWrite: t.cache?.write ?? 0,
+      total,
+      model: last.model ? `${last.model.providerID}/${last.model.id}` : undefined,
+    }
+  })
+
+  const sessionTotals = createMemo(() => {
+    let input = 0
+    let output = 0
+    let reasoning = 0
+    let cacheRead = 0
+    let cacheWrite = 0
+    for (const msg of sessionMessages()) {
+      if (msg.type === "assistant" && msg.tokens) {
+        input += msg.tokens.input ?? 0
+        output += msg.tokens.output ?? 0
+        reasoning += msg.tokens.reasoning ?? 0
+        cacheRead += msg.tokens.cache?.read ?? 0
+        cacheWrite += msg.tokens.cache?.write ?? 0
+      }
+    }
+    return {
+      input,
+      output,
+      reasoning,
+      cacheRead,
+      cacheWrite,
+      total: input + output + reasoning + cacheRead + cacheWrite,
+    }
+  })
+
+  const contextLimit = createMemo(() => {
+    const last = lastAssistant()
+    if (last) {
+      const m = models()?.find((model) => model.providerID === last.model.providerID && model.id === last.model.id)
+      if (m?.limit.context) return m.limit.context
+    }
+    return 1_000_000
+  })
+
+  const contextPercent = createMemo(() => {
+    if (usage()?.percent !== undefined) return usage()!.percent!
+    const total = latestTokens().total
+    if (total <= 0) return 0
+    return Math.round((total / contextLimit()) * 100)
+  })
+
+  const userTokens = createMemo(() => {
+    let total = 0
+    for (const msg of sessionMessages()) {
+      if (msg.type === "user") {
+        if ("text" in msg && typeof (msg as any).text === "string") {
+          total += Math.max(1, Math.ceil((msg as any).text.length / 3.5))
+        } else if ("content" in msg && Array.isArray((msg as any).content)) {
+          for (const c of (msg as any).content) {
+            if (c.type === "text" && typeof c.text === "string") {
+              total += Math.max(1, Math.ceil(c.text.length / 3.5))
+            }
+          }
+        }
+      }
+    }
+    return total
+  })
+
+  const basePromptTokens = 7_908
+
+  const promptTokens = createMemo(() => {
+    const input = latestTokens().input
+    if (input <= 0) return 0
+    return Math.min(basePromptTokens, input)
+  })
+
+  const toolsTokens = createMemo(() => {
+    const input = latestTokens().input
+    if (input <= 0) return 0
+    return Math.max(0, input - (promptTokens() + userTokens()))
+  })
+
+  const lastCompact = createMemo(() => {
+    for (let i = sessionMessages().length - 1; i >= 0; i--) {
+      const msg = sessionMessages()[i]
+      if (msg.type === "compaction" && msg.status === "completed") {
+        const time = (msg as any).time?.completed ?? (msg as any).time?.created
+        if (time) return new Date(time).toLocaleTimeString()
+        return "completed"
+      }
+    }
+    return "—"
+  })
 
   const offEscape = keymap.intercept(
     "key",
@@ -239,7 +405,11 @@ export function DevToolsBar() {
           width={dimensions().width}
           height={Math.max(0, dimensions().height - 1)}
           backgroundColor="transparent"
-          onMouseUp={close}
+          onMouseDown={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            close()
+          }}
         />
       </Show>
       <BarItem active={panel() === "server"} onClick={() => toggle("server")}>
@@ -332,7 +502,15 @@ export function DevToolsBar() {
               unit=" MB"
               decimals={0}
             />
-            <Action onClick={() => renderer.toggleDebugOverlay()} hoverBackground>
+            <Show when={themePerformance().length > 0}>
+              <box marginTop={1}>
+                <text fg={elevatedTheme.text.base} attributes={TextAttributes.BOLD} selectable={false}>
+                  Theme Render
+                </text>
+                <For each={themePerformance()}>{(entry) => <Row label={entry.key} value={String(entry.value)} />}</For>
+              </box>
+            </Show>
+            <Action onClick={toggleDebugOverlay} hoverBackground>
               {debugOverlay() ? "[x]" : "[ ]"} Debug overlay
             </Action>
           </PanelBox>
@@ -343,14 +521,35 @@ export function DevToolsBar() {
         <Show when={panel() === "theme"}>
           <PanelBox>
             <PanelTitle>Theme</PanelTitle>
-            <Row label="Name" value={themes.selected} />
+            <Row label="Current" value={themes.selected} />
             <Row label="Mode" value={mode()} />
-            <For each={themePerformance()}>{(entry) => <Row label={entry.key} value={String(entry.value)} />}</For>
-            <Show when={canSwitchMode()}>
-              <Action onClick={() => setMode(nextMode())} hoverBackground>
-                Switch to {nextMode()}
+            <box marginTop={1}>
+              <Action
+                onClick={() => {
+                  close()
+                  dialog.replace(() => <DialogThemeList />)
+                }}
+                hoverBackground
+              >
+                Select theme…
               </Action>
-            </Show>
+              <Action
+                onClick={() => {
+                  const all = Object.keys(themes.all()).sort((a, b) => a.localeCompare(b))
+                  const idx = all.indexOf(themes.selected)
+                  const next = all[(idx + 1) % all.length]
+                  if (next) themes.set(next)
+                }}
+                hoverBackground
+              >
+                Next theme →
+              </Action>
+              <Show when={canSwitchMode()}>
+                <Action onClick={() => setMode(nextMode())} hoverBackground>
+                  Switch to {nextMode()}
+                </Action>
+              </Show>
+            </box>
           </PanelBox>
         </Show>
       </BarItem>
@@ -380,35 +579,14 @@ export function DevToolsBar() {
               <text fg={elevatedTheme.text.base} attributes={TextAttributes.BOLD}>
                 Render
               </text>
-              <Action
-                onClick={() =>
-                  void config.update((draft) => {
-                    draft.debug = { ...draft.debug, timing: !timing() }
-                  })
-                }
-                hoverBackground
-              >
+              <Action onClick={toggleTiming} hoverBackground>
                 {timing() ? "[x]" : "[ ]"} Time to first draw
               </Action>
-              <Action
-                onClick={() =>
-                  void config.update((draft) => {
-                    draft.debug = { ...draft.debug, turn_tokens: !turnTokens() }
-                  })
-                }
-                hoverBackground
-              >
+              <Action onClick={toggleTurnTokens} hoverBackground>
                 {turnTokens() ? "[x]" : "[ ]"} Turn token usage
               </Action>
               <Show when={Boolean(turnTokens())}>
-                <Action
-                  onClick={() =>
-                    void config.update((draft) => {
-                      draft.debug = { ...draft.debug, turn_tokens: verboseTurnTokens() ? true : "verbose" }
-                    })
-                  }
-                  hoverBackground
-                >
+                <Action onClick={toggleVerboseTurnTokens} hoverBackground>
                   {verboseTurnTokens() ? "[x]" : "[ ]"} Turn token usage (verbose)
                 </Action>
               </Show>
@@ -435,9 +613,73 @@ export function DevToolsBar() {
       >
         <text fg={theme.text.muted}>Experiments</text>
       </BarItem>
-      <box flexGrow={1} minWidth={0}>
+      <box flexGrow={1} minWidth={0} zIndex={0}>
         <TimeToFirstDraw visible={timing()} width="100%" fg={theme.text.muted} label="Time to first draw" />
       </box>
+      <BarItem active={panel() === "tokens"} onClick={() => toggle("tokens")}>
+        <text
+          fg={
+            panel() === "tokens"
+              ? theme.text.action.primary.focused
+              : latestTokens().total > 0
+                ? theme.text.base
+                : theme.text.muted
+          }
+        >
+          {latestTokens().total > 0
+            ? `${formatTokens(latestTokens().total)}${contextPercent() > 0 ? ` (${contextPercent()}%)` : ""}`
+            : "--"}
+        </text>
+        <Show when={panel() === "tokens"}>
+          <PanelBox align="right" width={46}>
+            <PanelTitle>Tokens & Context</PanelTitle>
+            <Show
+              when={latestTokens().total > 0 || sessionTotals().total > 0}
+              fallback={
+                <box>
+                  <text fg={elevatedTheme.text.muted}>No tokens used in current session yet.</text>
+                  <text fg={elevatedTheme.text.muted} marginTop={1}>
+                    Send a prompt to see live stats.
+                  </text>
+                </box>
+              }
+            >
+              <Row
+                label="Context"
+                value={`${latestTokens().total.toLocaleString()} / ${contextLimit().toLocaleString()}`}
+              />
+              <Row label="Usage" value={progressBar(contextPercent())} />
+              <Show when={latestTokens().model}>
+                {(model) => <Row label="Model" value={model()} />}
+              </Show>
+
+              <box marginTop={1}>
+                <Row label="User" value={userTokens().toLocaleString()} />
+                <Row label="LLM" value={latestTokens().output.toLocaleString()} />
+                <Row label="Prompt" value={promptTokens().toLocaleString()} />
+                <Row label="Tools" value={toolsTokens().toLocaleString()} />
+                <Show when={latestTokens().reasoning > 0}>
+                  <Row label="Reasoning (R1)" value={latestTokens().reasoning.toLocaleString()} />
+                </Show>
+                <Row label="Tokens Spent" value={sessionTotals().total.toLocaleString()} />
+                <Row label="Last Compact" value={lastCompact()} />
+              </box>
+            </Show>
+
+            <box marginTop={1}>
+              <text fg={elevatedTheme.text.base} attributes={TextAttributes.BOLD}>
+                Display
+              </text>
+              <Action onClick={toggleTurnTokens} hoverBackground>
+                {turnTokens() ? "[x]" : "[ ]"} Show turn tokens in chat
+              </Action>
+              <Action onClick={toggleTps} hoverBackground>
+                {tps() ? "[x]" : "[ ]"} Show tokens/sec (TPS)
+              </Action>
+            </box>
+          </PanelBox>
+        </Show>
+      </BarItem>
     </box>
   )
 }
@@ -449,7 +691,7 @@ function BarItem(props: ParentProps<{ active: boolean; onClick: () => void }>) {
   return (
     <box
       position="relative"
-      zIndex={props.active ? 2500 : undefined}
+      zIndex={props.active ? 2500 : 0}
       height={1}
       flexDirection="row"
       paddingLeft={1}
@@ -463,8 +705,14 @@ function BarItem(props: ParentProps<{ active: boolean; onClick: () => void }>) {
       }
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
-      onMouseUp={() => {
-        if (renderer.getSelection()?.getSelectedText()) return
+      onMouseDown={(event) => {
+        renderer.clearSelection?.()
+        event.stopPropagation()
+      }}
+      onMouseUp={(event) => {
+        renderer.clearSelection?.()
+        event.preventDefault()
+        event.stopPropagation()
         props.onClick()
       }}
     >
@@ -473,7 +721,7 @@ function BarItem(props: ParentProps<{ active: boolean; onClick: () => void }>) {
   )
 }
 
-function PanelBox(props: ParentProps) {
+function PanelBox(props: ParentProps<{ align?: "left" | "right"; width?: number }>) {
   const theme = useTheme()
   const renderer = useRenderer()
   return (
@@ -481,16 +729,21 @@ function PanelBox(props: ParentProps) {
       position="absolute"
       zIndex={2600}
       bottom={1}
-      left={-1}
-      width={42}
+      left={props.align === "right" ? undefined : -1}
+      right={props.align === "right" ? 0 : undefined}
+      width={props.width ?? 42}
       paddingLeft={2}
       paddingRight={2}
       paddingTop={1}
       paddingBottom={1}
       backgroundColor={theme.background.raised.base}
       flexDirection="column"
+      onMouseDown={(event) => {
+        renderer.clearSelection?.()
+        event.stopPropagation()
+      }}
       onMouseUp={(event) => {
-        if (renderer.getSelection()?.getSelectedText()) return
+        event.preventDefault()
         event.stopPropagation()
       }}
     >
@@ -502,7 +755,7 @@ function PanelBox(props: ParentProps) {
 function PanelTitle(props: ParentProps) {
   const theme = useTheme()
   return (
-    <text fg={theme.text.base} attributes={TextAttributes.BOLD} marginBottom={1}>
+    <text fg={theme.text.base} attributes={TextAttributes.BOLD} marginBottom={1} selectable={false}>
       {props.children}
     </text>
   )
@@ -512,16 +765,25 @@ function Row(props: { label: string; value: string }) {
   const theme = useTheme()
   return (
     <box flexDirection="row">
-      <text fg={theme.text.muted}>{props.label}</text>
+      <text fg={theme.text.muted} selectable={false}>{props.label}</text>
       <box flexGrow={1} />
-      <text fg={theme.text.base}>{props.value}</text>
+      <text fg={theme.text.base} selectable={false}>{props.value}</text>
     </box>
   )
 }
 
 function Action(props: ParentProps<{ onClick: () => void; disabled?: boolean; hoverBackground?: boolean }>) {
   const theme = useTheme()
+  const renderer = useRenderer()
   const [hovered, setHovered] = createSignal(false)
+  const trigger = (event?: any) => {
+    if (event) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+    }
+    renderer.clearSelection?.()
+    if (!props.disabled) props.onClick()
+  }
   return (
     <box
       backgroundColor={
@@ -529,14 +791,33 @@ function Action(props: ParentProps<{ onClick: () => void; disabled?: boolean; ho
       }
       onMouseOver={() => setHovered(true)}
       onMouseOut={() => setHovered(false)}
-      onMouseUp={(event) => {
-        event.stopPropagation()
-        if (!props.disabled) props.onClick()
+      onMouseDown={(event) => {
+        renderer.clearSelection?.()
+        event.stopPropagation?.()
       }}
+      onMouseUp={trigger}
     >
-      <text fg={props.disabled ? theme.text.muted : theme.text.action.primary.base}>{props.children}</text>
+      <text
+        fg={props.disabled ? theme.text.muted : theme.text.action.primary.base}
+        selectable={false}
+      >
+        {props.children}
+      </text>
     </box>
   )
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
+function progressBar(percent: number, width: number = 14) {
+  const clamped = Math.max(0, Math.min(100, percent))
+  const filled = Math.round((clamped / 100) * width)
+  const empty = width - filled
+  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${clamped}%`
 }
 
 function cpuPercent(microseconds: number, milliseconds: number) {

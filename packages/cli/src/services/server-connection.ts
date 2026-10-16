@@ -38,7 +38,7 @@ export const resolve = Effect.fn("cli.server-connection.resolve")(function* (arg
       )
     return { endpoint } satisfies Resolved
   }
-  if (args.standalone || (yield* ServiceConfig.read()).disabled === true) {
+  if (args.standalone || (yield* ServiceConfig.read()).disabled === true || process.env.DEEPCODE_STANDALONE === "1") {
     return { endpoint: yield* Standalone.start() } satisfies Resolved
   }
 

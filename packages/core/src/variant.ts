@@ -112,17 +112,19 @@ const cloudflareAIGateway: Protocol = (model, support) => {
 }
 
 const deepseekChat: Protocol = (_, support) => {
-  switch (support.type) {
-    case "effort":
-      return efforts(support.values ?? ["low", "high", "max"], (effort) => {
-        if (effort === "none") return { body: { thinking: { type: "disabled" } } }
-        return { settings: { reasoningEffort: effort }, body: { thinking: { type: "enabled" } } }
-      })
-    case "toggle":
-      return toggle({ body: { thinking: { type: "disabled" } } }, { body: { thinking: { type: "enabled" } } })
-    case "budget_tokens":
-      return []
+  if (support.type === "toggle") {
+    return toggle({ body: { thinking: { type: "disabled" } } }, { body: { thinking: { type: "enabled" } } })
   }
+  if (support.type === "effort") {
+    if (support.values === undefined) {
+      return toggle({ body: { thinking: { type: "disabled" } } }, { body: { thinking: { type: "enabled" } } })
+    }
+    return efforts(support.values, (effort) => {
+      if (effort === "none") return { body: { thinking: { type: "disabled" } } }
+      return { settings: { reasoningEffort: effort }, body: { thinking: { type: "enabled" } } }
+    })
+  }
+  return []
 }
 
 const nvidiaTemplate = (chat_template_kwargs: Record<string, unknown>): Overlay => ({

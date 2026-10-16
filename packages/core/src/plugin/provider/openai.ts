@@ -293,10 +293,7 @@ export const OpenAIPlugin = define({
           }
           draft.cost = []
           // Match Codex CLI so context consumption and subscription usage stay consistent between clients.
-          draft.limit =
-            apiID === "gpt-6.1-sol"
-              ? { ...draft.limit, context: 628_000, input: 500_000 }
-              : { ...draft.limit, context: 400_000, input: 272_000 }
+          draft.limit = { ...draft.limit, context: 400_000, input: 272_000 }
         })
       }
     })

@@ -1,7 +1,6 @@
 import { LOCALE_HEADER } from "../lib/language"
 
-// Stats change throughout the day; expired snapshots must refresh before reuse.
-export const statsPageCacheControl = "public, max-age=60, s-maxage=300, must-revalidate"
+const statsPageCacheControl = "public, max-age=60, s-maxage=300, stale-while-revalidate=86400"
 
 export function setStatsPageCacheHeaders(headers: Headers | undefined) {
   if (!headers) return

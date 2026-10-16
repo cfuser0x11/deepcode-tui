@@ -96,14 +96,13 @@ const it = testEffect(
   ),
 )
 
-test("compaction prompt preserves detailed work state and relevant files", () => {
+test("compaction prompt preserves detailed architecture and active plan", () => {
   const prompt = SessionCompaction.buildPrompt(false)
 
-  expect(prompt).toContain("## Work State")
-  expect(prompt).toContain("### Completed")
-  expect(prompt).toContain("### Active")
-  expect(prompt).toContain("### Blocked")
-  expect(prompt).toContain("## Relevant Files")
+  expect(prompt).toContain("2. ARCHITECTURE & SYSTEM INVARIANTS")
+  expect(prompt).toContain("3. HISTORICAL PHASES & CHRONOLOGY")
+  expect(prompt).toContain("4. CURRENT WORKSPACE & ACTIVE IMPLEMENTATION PLAN")
+  expect(prompt).toContain("5. IMMEDIATE NEXT STEP")
 })
 
 it.effect("compaction describes tool media without embedding base64", () =>
@@ -141,17 +140,16 @@ it.effect("compaction truncation does not split surrogate pairs", () =>
 
 test("compaction prompt requires the checkpoint headings in order", () => {
   const prompt = SessionCompaction.buildPrompt(false)
-  expect(prompt.match(/^#{2,3} .+$/gm)).toEqual([
-    "## Objective",
-    "## Requirements",
-    "## Decisions",
-    "## Work State",
-    "### Completed",
-    "### Active",
-    "### Blocked",
-    "## Next Move",
-    "## Relevant Files",
-    "## Important Context",
+  const headings = prompt
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^\d+\.\s+/.test(l))
+  expect(headings).toEqual([
+    "1. PRIMARY OBJECTIVE:",
+    "2. ARCHITECTURE & SYSTEM INVARIANTS (CUMULATIVE BASELINE):",
+    "3. HISTORICAL PHASES & CHRONOLOGY (COMPLETED & FROZEN):",
+    "4. CURRENT WORKSPACE & ACTIVE IMPLEMENTATION PLAN:",
+    "5. IMMEDIATE NEXT STEP:",
   ])
 })
 
@@ -226,6 +224,33 @@ it.effect("auto compaction estimates current content against the buffered prompt
     const outputLimited = { context: 100_000, output: 30_000 }
     expect(yield* due(input(83_999, outputLimited))).toBe(false)
     expect(yield* due(input(84_000, outputLimited))).toBe(true)
+
+    // DeepSeek defaults to an 80k threshold even when context is 1M.
+    const deepseekModel = LanguageModel.make({
+      id: "deepseek-r1",
+      provider: "deepseek",
+      route: OpenAIChat.route,
+    })
+    const deepseekInput = (tokens: number) => {
+      const base = input(tokens, { context: 1_000_000, output: 8192 })
+      const assistant = base.messages[0] as any
+      return {
+        ...base,
+        model: SessionRunnerModel.resolved(deepseekModel, {
+          capabilities: { tools: true, input: ["text", "image", "pdf"], output: ["text"] },
+          cost: [],
+          limit: { context: 1_000_000, output: 8192 },
+        }),
+        messages: [
+          {
+            ...assistant,
+            model: { id: "deepseek-r1", providerID: "deepseek" },
+          },
+        ],
+      }
+    }
+    expect(yield* due(deepseekInput(79_999))).toBe(false)
+    expect(yield* due(deepseekInput(80_000))).toBe(true)
 
     const assistant = input(89_000, contextLimited).messages[0]
     const tool = SessionMessage.AssistantTool.make({

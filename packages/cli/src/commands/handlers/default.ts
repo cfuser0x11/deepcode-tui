@@ -1,6 +1,6 @@
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
-import { run } from "@opencode/tui"
+const tuiPromise = import("@opencode/tui")
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { Config } from "../../config"
@@ -12,12 +12,37 @@ import { Npm } from "@opencode/util/npm"
 import { OPENCODE_ARTIFACT, OPENCODE_CHANNEL, OPENCODE_VERSION } from "../../version"
 import { Env } from "../../env"
 import { Service } from "@opencode/client/effect/service"
+import { ServiceConfig } from "../../services/service-config"
 import { OpenCode } from "@opencode/client/promise"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
+import { hasDeepSeekConfig, runDeepSeekSetup } from "../../setup"
+import { startSpinner } from "../../util/spinner"
 
-export default Runtime.handler(Commands, (input) =>
+export type DefaultInput = {
+  readonly standalone?: boolean
+  readonly background?: boolean
+  readonly server?: Option.Option<string>
+  readonly auto?: boolean
+  readonly yolo?: boolean
+  readonly dangerouslySkipPermissions?: boolean
+  readonly dead?: boolean
+  readonly setup?: boolean
+  readonly directory?: Option.Option<string>
+  readonly continue?: boolean
+  readonly session?: Option.Option<string>
+  readonly prompt?: Option.Option<string>
+}
+
+export const runDefault = (input: DefaultInput) =>
   Effect.gen(function* () {
+    if (input.dead) {
+      process.env.DEEPCODE_DEAD_MODE = "1"
+    }
+    const setupSuccess = yield* Effect.promise(() => runDeepSeekSetup(Boolean(input.setup)))
+    if (!setupSuccess && !hasDeepSeekConfig()) {
+      return
+    }
     const requestedDirectory = Option.getOrUndefined(input.directory)
     const requestedServer = Option.getOrUndefined(input.server)
     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
@@ -32,24 +57,37 @@ export default Runtime.handler(Commands, (input) =>
       Effect.forever,
       Effect.forkScoped,
     )
+    const config = yield* Config.Service
+    const cliConfig = yield* config.get()
+    const keepBackground = Boolean(input.background) || cliConfig.server?.background === true
+    if (!keepBackground && requestedServer === undefined) {
+      const serviceOptions = yield* ServiceConfig.options()
+      yield* Service.stop(serviceOptions).pipe(Effect.ignore)
+    }
+    const isStandalone = input.standalone || !keepBackground || process.env.DEEPCODE_STANDALONE === "1"
+    const spinner = isStandalone ? undefined : startSpinner("Connecting to background service...")
     const server = yield* ServerConnection.resolve({
       server: requestedServer,
-      standalone: input.standalone,
+      standalone: isStandalone,
       mismatch: "replace",
       onStart: (reason, previousVersion) => {
         Queue.offerUnsafe(serviceStarts, { reason, previousVersion })
         if (reason === "version-mismatch" && preflight.begin(previousVersion)) return
-        process.stderr.write(
+        spinner?.update(
           reason === "version-mismatch"
-            ? "Restarting background server (version mismatch)...\n"
-            : "Starting background server...\n",
+            ? "Updating background server..."
+            : "Starting background server (compiling engine)...",
         )
       },
     }).pipe(
-      Effect.tapError(() =>
-        Effect.promise(() => preflight.fail("OpenCode update could not start the new background service")),
-      ),
+      Effect.tapError(() => {
+        spinner?.stop("Failed to start background server")
+        return Effect.promise(() => preflight.fail("DeepCode update could not start the new background service"))
+      }),
     )
+    if (spinner) {
+      spinner.stop(`Connected to background service (${server.endpoint.url})`)
+    }
     const session = Option.getOrUndefined(input.session)
     // A missing --session ID becomes the ID of the session the first prompt creates.
     const sessionExists =
@@ -85,7 +123,6 @@ export default Runtime.handler(Commands, (input) =>
         Effect.forkScoped({ startImmediately: true }),
       )
     preflight.loading()
-    const config = yield* Config.Service
     const npm = yield* Npm.Service
     const fileSystem = yield* FileSystem.FileSystem
     const runServicePromise = Effect.runPromiseWith(Context.make(FileSystem.FileSystem, fileSystem))
@@ -93,6 +130,20 @@ export default Runtime.handler(Commands, (input) =>
     const runFork = Effect.runForkWith(context)
     const runPromise = Effect.runPromiseWith(context)
     const service = server.service
+    if (service) {
+      const serviceOptions = yield* ServiceConfig.options()
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          const currentConfig = yield* config.get()
+          if (!input.background && currentConfig.server?.background !== true) {
+            yield* ServerConnection.shutdownPersistentPty(serviceOptions).pipe(Effect.ignore)
+            yield* Service.stop(serviceOptions).pipe(Effect.ignore)
+          }
+        }),
+      )
+    }
+    process.stderr.write("[*] Launching workspace...\n")
+    const { run } = yield* Effect.promise(() => tuiPromise)
     yield* run({
       app: {
         name: process.env.OPENCODE_CLIENT ?? OPENCODE_ARTIFACT,
@@ -153,5 +204,6 @@ export default Runtime.handler(Commands, (input) =>
         runFork(effect)
       },
     }).pipe(Effect.provide(LayerNode.compile(Global.node)))
-  }),
-)
+  })
+
+export default Runtime.handler(Commands, runDefault)
