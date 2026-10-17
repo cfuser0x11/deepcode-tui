@@ -441,7 +441,6 @@ export default Plugin.define({
           title: "Initialize Git repository",
           group: "VCS",
           palette: true,
-          slash: { name: "git-init", aliases: ["gitinit"] },
           async run() {
             const loc = context.location
             if (!loc) return
