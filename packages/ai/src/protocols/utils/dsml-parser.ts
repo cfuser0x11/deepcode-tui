@@ -19,7 +19,7 @@ const DEEPSEEK_TOOL_CALLS_END = `<\\s*(?:[|\\uFF5C]\\s*){1,2}\\s*tool\\s*calls?\
 
 // Check if string might contain a tool call opening tag, raw JS tool invocation, or pseudo-tool call
 const TOOL_START_REGEX = new RegExp(
-  `${DSML_OPEN_PREFIX}\\s*(?:call|invoke|calls|parameter)|${DEEPSEEK_TOOL_CALLS_BEGIN}|<(?:tool_call|function_call|create_file|write_file|replace_file_content|edit_file|run_command|read_file|view_file|list_files|get_diagnostics|search_files|write|edit|read|shell|glob|grep|diagnostics)\\b|(?:(?:const|let|var)\\s+\\w+\\s*=\\s*)?await\\s+tools\\.|tools\\.(?:bash|shell|run_command|cmd|terminal|exec|write|read|edit|mkdir)\\s*\\(|(?:(?:\\[\\s*)?(?:Assistant\\s+)?(?:tool\\s+)?(?:call|action)\\s*\\]?:\\s*\\w+\\s*(?:\\(|\\{))|(?:(?:^|\\n)\\s*(?:Assistant:\\s*)?(?:\\[\\s*Action:[^\\]\\n]+\\]:?|(?:Tool|Action):)\\s*(?:[a-zA-Z0-9_]+\\s*)?:?\\s*\\{)|(?:(?:^|\\n)\\s*(?:Assistant:\\s*)?Action:\\s*[a-zA-Z0-9_]+[\\s\\S]*?Action Input:\\s*\\{)`,
+  `${DSML_OPEN_PREFIX}\\s*(?:call|invoke|calls|parameter|param)|${DEEPSEEK_TOOL_CALLS_BEGIN}|<(?:tool_call|function_call|call|invoke|tool|create_file|write_file|replace_file_content|edit_file|run_command|read_file|view_file|list_files|get_diagnostics|search_files|write|edit|read|shell|glob|grep|diagnostics)\\b|(?:(?:const|let|var)\\s+\\w+\\s*=\\s*)?await\\s+tools\\.|tools\\.(?:bash|shell|run_command|cmd|terminal|exec|write|read|edit|mkdir)\\s*\\(|(?:(?:\\[\\s*)?(?:Assistant\\s+)?(?:tool\\s+)?(?:call|action)\\s*\\]?:\\s*\\w+\\s*(?:\\(|\\{))|(?:(?:^|\\n)\\s*(?:Assistant:\\s*)?(?:\\[\\s*Action:[^\\]\\n]+\\]:?|(?:Tool|Action):)\\s*(?:[a-zA-Z0-9_]+\\s*)?:?\\s*\\{)|(?:(?:^|\\n)\\s*(?:Assistant:\\s*)?Action:\\s*[a-zA-Z0-9_]+[\\s\\S]*?Action Input:\\s*\\{)`,
   "i",
 )
 
@@ -118,6 +118,8 @@ export function isPartialToolTag(text: string): boolean {
         /^<\s*\/?\s*t/i.test(tail) ||
         /^<\s*\/?\s*tool/i.test(tail) ||
         /^<\s*\/?\s*func/i.test(tail) ||
+        /^<\s*\/?\s*call/i.test(tail) ||
+        /^<\s*\/?\s*inv/i.test(tail) ||
         /^<\s*\/?\s*param/i.test(tail) ||
         /^<\s*\/?\s*work/i.test(tail) ||
         /^<\s*\/?\s*end/i.test(tail) ||
@@ -179,15 +181,15 @@ export function hasCompleteToolBlock(text: string): boolean {
   }
 
   // If text starts with DSML parameter directly:
-  const isParamBlock = new RegExp(`^\\s*${DSML_OPEN_PREFIX}\\s*parameter`, "i").test(text)
+  const isParamBlock = new RegExp(`^\\s*${DSML_OPEN_PREFIX}\\s*(?:parameter|param)`, "i").test(text)
   if (isParamBlock) {
-    const dsmlCloseParam = new RegExp(`${DSML_CLOSE_PREFIX}\\s*(?:parameter|invoke|call|calls)>`, "i")
+    const dsmlCloseParam = new RegExp(`${DSML_CLOSE_PREFIX}\\s*(?:parameter|param|invoke|call|calls)>`, "i")
     return dsmlCloseParam.test(text)
   }
 
-  // If text contains XML tool_call / function_call opening:
-  if (/^\s*<(?:tool_call|function_call|tool)\b/i.test(text)) {
-    return /<\/(?:tool_call|function_call|tool)>/i.test(text)
+  // If text contains XML tool_call / function_call / invoke / call opening:
+  if (/^\s*<(?:tool_call|function_call|tool|invoke|call)\b/i.test(text)) {
+    return /<\/(?:tool_call|function_call|tool|invoke|call)>/i.test(text)
   }
 
   // If text contains direct tag:
@@ -378,13 +380,13 @@ export function stripToolTags(content: string): string {
 
   // 1b. Remove orphan DSML parameter blocks
   const dsmlOrphanRegex = new RegExp(
-    `${DSML_OPEN_PREFIX}\\s*parameter[\\s\\S]*?(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|calls|call|invoke)[^>]*>|$)`,
+    `${DSML_OPEN_PREFIX}\\s*(?:parameter|param)[\\s\\S]*?(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|param|calls|call|invoke)[^>]*>|$)`,
     "gi",
   )
   text = text.replace(dsmlOrphanRegex, "")
 
-  // 2. Remove standard XML tool calls: <tool_call>...</tool_call>
-  text = text.replace(/<(?:tool_call|function_call|tool)\b[\s\S]*?(?:<\/(?:tool_call|function_call|tool)>|$)/gi, "")
+  // 2. Remove standard XML tool calls: <tool_call>...</tool_call>, <invoke>...</invoke>, <call>...</call>
+  text = text.replace(/<(?:tool_call|function_call|tool|invoke|call)\b[\s\S]*?(?:<\/(?:tool_call|function_call|tool|invoke|call)>|$)/gi, "")
 
   // 3. Remove direct tags: <write_file>...</write_file>, etc.
   const directTags = [
@@ -418,7 +420,7 @@ export function stripToolTags(content: string): string {
   text = text.replace(/<\s*\/?\s*(?:[|\uFF5C]\s*)*DSML[^>]*>/gi, "")
   text = text.replace(new RegExp(`${DSML_OPEN_PREFIX}[^>]*>`, "gi"), "")
   text = text.replace(new RegExp(`${DSML_CLOSE_PREFIX}[^>]*>`, "gi"), "")
-  text = text.replace(/<\/?(?:tool_call|function_call|tool|parameter|param|working|end_working|execute|exec|shell|action|command|function)\b[^>]*>/gi, "")
+  text = text.replace(/<\/?(?:tool_call|function_call|tool|invoke|call|parameter|param|working|end_working|execute|exec|shell|action|command|function)\b[^>]*>/gi, "")
 
   // 5. Remove pseudo tool calls and any attached simulated Tool results
   const pseudoStripRegex = /(?:\[\s*)?(?:Assistant\s+)?(?:tool\s+)?(?:call|action)\s*\]?:\s*[a-zA-Z0-9_]+\s*\(/gi
@@ -529,7 +531,7 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
   const cleanPath = (p: unknown): string => {
     if (typeof p !== "string") return ""
     let s = p.trim().replace(/^['"`]+|['"`]+$/g, "").trim()
-    s = s.replace(new RegExp(`(?:${DSML_CLOSE_PREFIX}|<\\/\\s*(?:parameter|param|path|file|filepath|filename|target|name|invoke)?)[^>]*>`, "gi"), "")
+    s = s.replace(new RegExp(`(?:${DSML_CLOSE_PREFIX}|<\\/\\s*(?:parameter|param|path|file|filepath|filename|target|name|invoke|call)?)[^>]*>`, "gi"), "")
     s = s.replace(/<[|｜\uFF5C].*$/g, "")
     s = s.replace(/<\/?[a-zA-Z0-9_\-:|｜\uFF5C\s]+>$/g, "")
     return s.trim().replace(/^['"`]+|['"`]+$/g, "").trim()
@@ -580,10 +582,10 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
       } catch {}
     }
 
-    // 2. Extract DSML / XML parameter tags: <parameter name="..." ...>VALUE</parameter>
+    // 2. Extract DSML / XML parameter tags: <parameter name="..." ...>VALUE</parameter> or <parameter="name" ...>VALUE</parameter>
     const dsmlParams: Record<string, string> = {}
     const dsmlParamRegex = new RegExp(
-      `(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)\\s+name=["']?([^"'\\s>]+)["']?[^>]*>([\\s\\S]*?)(?:${DSML_CLOSE_PREFIX}[^>]*>|<\\/(?:parameter|param)[^>]*>|(?=${DSML_OPEN_PREFIX})|(?=<(?:parameter|param))|$)`,
+      `(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)(?:\\s+name=|=|:)\\s*["']?([^"'\\s>]+)["']?[^>]*>([\\s\\S]*?)(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|param)?[^>]*>|<\\/(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)[^>]*>|(?=${DSML_OPEN_PREFIX})|(?=<(?:parameter|param))|$)`,
       "gi",
     )
     let dMatch: RegExpExecArray | null
@@ -646,15 +648,31 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
       const cwdMatch = inner.match(/<(?:cwd|dir|workdir)>([\s\S]*?)<\/(?:cwd|dir|workdir)>/i)
       let rawCmd = dsmlParams.command || dsmlParams.cmd || (cm ? cm[1].trim() : ((toolArgs.command as string) || inner.trim()))
       rawCmd = rawCmd
-        .replace(new RegExp(`${DSML_CLOSE_PREFIX}\\s*(?:call|invoke)?`, "gi"), "")
         .replace(
-          new RegExp(`^(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)\\s+name=["']?(?:command|cmd)["']?[^>]*>`, "i"),
+          new RegExp(`^(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)(?:\\s+name=|=|:)\\s*["']?(?:command|cmd)["']?[^>]*>`, "i"),
           "",
         )
-        .replace(new RegExp(`<\/(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)>$`, "i"), "")
-        .replace(/^<(?:command|cmd)[^>]*>/i, "")
-        .replace(/<\/(?:command|cmd)>$/i, "")
+        .replace(
+          new RegExp(`(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|param|call|invoke)?|\\s*<\\/(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param|command|cmd)>)[^>]*>$`, "i"),
+          "",
+        )
+        .replace(new RegExp(`${DSML_CLOSE_PREFIX}[^>]*>`, "gi"), "")
+        .replace(new RegExp(`${DSML_OPEN_PREFIX}[^>]*>`, "gi"), "")
+        .replace(/<\/?(?:parameter|param|command|cmd|invoke|call|calls)\b[^>]*>/gi, "")
         .trim()
+      if (!dsmlParams.command && !dsmlParams.cmd) {
+        // Strip other DSML parameter blocks if inner had multiple parameters
+        rawCmd = rawCmd
+          .replace(
+            new RegExp(
+              `(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)(?:\\s+name=|=|:)\\s*["']?(?:timeout|workdir|cwd|dir|env)["']?[^>]*>[\\s\\S]*?(?:${DSML_CLOSE_PREFIX}[^>]*>|<\\/(?:parameter|param)[^>]*>|$)`,
+              "gi",
+            ),
+            "",
+          )
+          .replace(/\r?\n\s*\d{4,}\s*$/g, "")
+          .trim()
+      }
       const isProseMonologue =
         !cm &&
         !dsmlParams.command &&
@@ -706,12 +724,40 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
         // Strip any path tag or other known metadata tags from inner, the rest is content!
         let stripped = inner
           .replace(
+            new RegExp(
+              `(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)(?:\\s+name=|=|:)\\s*["']?(?:path|file|filepath|file_path|file-path|filename|target|target_file|target-file|targetFile|destination|name)["']?[^>]*>[\\s\\S]*?(?:${DSML_CLOSE_PREFIX}[^>]*>|<\\/(?:parameter|param)[^>]*>|$)`,
+              "gi",
+            ),
+            "",
+          )
+          .replace(
             /<(?:path|file|filepath|file_path|file-path|filename|target|target_file|target-file|targetFile|destination|name)\b[^>]*>[\s\S]*?<\/(?:path|file|filepath|file_path|file-path|filename|target|target_file|target-file|targetFile|destination|name)>/gi,
+            "",
+          )
+          .replace(
+            new RegExp(
+              `^(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)(?:\\s+name=|=|:)\\s*["']?(?:content|code|body|text)["']?[^>]*>`,
+              "i",
+            ),
+            "",
+          )
+          .replace(
+            new RegExp(
+              `(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|param)?[^>]*>|<\\/(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)[^>]*>)\\s*$`,
+              "i",
+            ),
             "",
           )
           .trim()
         contentVal = stripped
       }
+
+      // Clean any stray DSML or tool wrapper tags that may have leaked into content
+      contentVal = contentVal
+        .replace(new RegExp(`^\\s*${DSML_OPEN_PREFIX}\\s*(?:calls|call|invoke|parameter|param)[^>]*>`, "i"), "")
+        .replace(new RegExp(`${DSML_CLOSE_PREFIX}\\s*(?:calls|call|invoke|parameter|param)?[^>]*>`, "gi"), "")
+        .replace(/<\/\s*(?:invoke|call|calls|tool_call|function_call)\s*>/gi, "")
+        .trim()
 
       // If path is still empty, deduce it from comments or content signature
       if (!pathVal) {
@@ -917,7 +963,7 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
 
   // 1. Match DSML invoke/call blocks
   const dsmlRegex = new RegExp(
-    `${DSML_OPEN_PREFIX}\\s*(?:call|invoke)\\s+name=["']?([^"'\\s>]+)["']?[^>]*>([\\s\\S]*?)(?:${DSML_CLOSE_PREFIX}\\s*(?:call|invoke|calls)[^>]*>|(?=${DSML_OPEN_PREFIX}\\s*(?:call|invoke))|$)`,
+    `${DSML_OPEN_PREFIX}\\s*(?:call|invoke)\\s+(?:name|action)=["']?([^"'\\s>]+)["']?[^>]*>([\\s\\S]*?)(?:${DSML_CLOSE_PREFIX}\\s*(?:call|invoke|calls)[^>]*>|(?=${DSML_OPEN_PREFIX}\\s*(?:call|invoke))|$)`,
     "gi",
   )
   let m: RegExpExecArray | null
@@ -930,7 +976,7 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
 
   // 1b. Match orphan DSML parameter blocks (where model omitted opening invoke/call tag)
   const orphanParamRegex = new RegExp(
-    `${DSML_OPEN_PREFIX}\\s*parameter\\s+name=["']?([^"'\\s>]+)["']?[^>]*>([\\s\\S]*?)(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|invoke|call|calls)[^>]*>|<\\/(?:parameter|param)[^>]*>|(?=${DSML_OPEN_PREFIX}\\s*(?:parameter|call|invoke))|(?=<(?:parameter|param))|$)`,
+    `${DSML_OPEN_PREFIX}\\s*(?:parameter|param)(?:\\s+name=|=|:)\\s*["']?([^"'\\s>]+)["']?[^>]*>([\\s\\S]*?)(?:${DSML_CLOSE_PREFIX}\\s*(?:parameter|param|invoke|call|calls)[^>]*>|<\\/(?:${DSML_OPEN_PREFIX}\\s*)?(?:parameter|param)[^>]*>|(?=${DSML_OPEN_PREFIX}\\s*(?:parameter|param|call|invoke))|(?=<(?:parameter|param))|$)`,
     "gi",
   )
   const rawMatches: Array<{ name: string; value: string; start: number; end: number }> = []
@@ -985,9 +1031,9 @@ export function parseDSMLAndXML(content: string, idPrefix: string = `call_dsml_$
     }
   }
 
-  // 2. Match standard XML <tool_call name="..."> or <function_call name="...">
+  // 2. Match standard XML <tool_call name="..."> or <function_call name="..."> or <call name="..."> or <invoke name="...">
   const xmlRegex =
-    /<(?:tool_call|function_call|tool)\s+([^>]*?)name=["']?([^"'\s>]+)["']?([^>]*)>([\s\S]*?)(?:<\/(?:tool_call|function_call|call|tool)>|$)/gi
+    /<(?:tool_call|function_call|tool|invoke|call)\s+([^>]*?)(?:name|action)=["']?([^"'\s>]+)["']?([^>]*)>([\s\S]*?)(?:<\/(?:tool_call|function_call|call|tool|invoke)>|$)/gi
   while ((m = xmlRegex.exec(content)) !== null) {
     processCall(m[2], m[4], `${m[1]} ${m[3]}`)
   }

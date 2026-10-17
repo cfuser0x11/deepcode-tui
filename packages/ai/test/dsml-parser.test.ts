@@ -363,6 +363,69 @@ Assistant: Result: Tool execution`
   expect(cleanText).not.toContain("Result: Tool execution")
 })
 
+test("parseDSMLAndXML handles parameter=\"content\" shorthand in write tool call", () => {
+  const content = `< | DSML | | calls>
+< | DSML | | call name="write">
+< | DSML | | parameter="content" string="true">export interface NavLink {
+  id: string;
+  label: string;
+}
+</ | DSML | | parameter>
+< | DSML | | parameter name="path" string="true">C:\\Users\\steep\\Desktop\\ruff\\src\\lib\\nav.ts</ | DSML | | parameter>
+</invoke>
+</ | DSML | | calls>`
+
+  const { toolCalls } = parseDSMLAndXML(content)
+  expect(toolCalls.length).toBe(1)
+  expect(toolCalls[0].name).toBe("write")
+  expect(toolCalls[0].input.path).toBe("C:\\Users\\steep\\Desktop\\ruff\\src\\lib\\nav.ts")
+  expect(toolCalls[0].input.content).toContain("export interface NavLink")
+  expect(toolCalls[0].input.content).not.toContain("DSML")
+  expect(toolCalls[0].input.content).not.toContain("parameter")
+  expect(toolCalls[0].input.content).not.toContain("invoke")
+})
+
+test("parseDSMLAndXML handles parameter=\"command\" shorthand in shell call", () => {
+  const content = `< | DSML | | calls>
+< | DSML | | parameter="command">npm install --no-audit --no-fund</ | DSML | | parameter>
+</ | DSML | | calls>`
+
+  const { toolCalls } = parseDSMLAndXML(content)
+  expect(toolCalls.length).toBe(1)
+  expect(toolCalls[0].name).toBe("shell")
+  expect(toolCalls[0].input.command).toBe("npm install --no-audit --no-fund")
+  expect(toolCalls[0].input.command).not.toContain("parameter")
+  expect(toolCalls[0].input.command).not.toContain("DSML")
+})
+
+test("parseDSMLAndXML handles shell command with separate timeout parameter", () => {
+  const content = `< | DSML | | parameter="command">cmd /c "if exist node_modules (echo INSTALLED) else (echo MISSING) & echo --- & npm run typecheck"</ | DSML | | parameter>
+< | DSML | | parameter name="timeout" string="false">180000</ | DSML | | parameter>`
+
+  const { toolCalls } = parseDSMLAndXML(content)
+  expect(toolCalls.length).toBe(1)
+  expect(toolCalls[0].name).toBe("shell")
+  expect(toolCalls[0].input.command).toBe(
+    'cmd /c "if exist node_modules (echo INSTALLED) else (echo MISSING) & echo --- & npm run typecheck"',
+  )
+  expect(toolCalls[0].input.command).not.toContain("180000")
+  expect(toolCalls[0].input.command).not.toContain("parameter")
+})
+
+test("parseDSMLAndXML handles <call name=\"shell\"> with trailing timeout line", () => {
+  const content = `<call name="shell">
+cmd /c "npm run build > build.log 2>&1 & echo EXIT:%ERRORLEVEL%"
+300000
+</call>`
+
+  const { toolCalls } = parseDSMLAndXML(content)
+  expect(toolCalls.length).toBe(1)
+  expect(toolCalls[0].name).toBe("shell")
+  expect(toolCalls[0].input.command).toBe('cmd /c "npm run build > build.log 2>&1 & echo EXIT:%ERRORLEVEL%"')
+  expect(toolCalls[0].input.command).not.toContain("300000")
+})
+
+
 
 
 
