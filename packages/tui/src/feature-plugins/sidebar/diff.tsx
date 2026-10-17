@@ -14,28 +14,19 @@ export type DiffFile = {
   readonly status: "added" | "deleted" | "modified"
 }
 
-const PROJECT_MARKERS = new Set([
-  "package.json",
-  "tsconfig.json",
-  "cargo.toml",
-  "go.mod",
-  "pyproject.toml",
-  "requirements.txt",
-  "pipfile",
-  "pom.xml",
-  "build.gradle",
-  "build.gradle.kts",
-  "composer.json",
-  "gemfile",
-  "cmakelists.txt",
-  "makefile",
-  ".opencode",
-  ".deepcode",
-])
+export function resolveDirectory(dir: string): string {
+  if (!dir) return ""
+  if (dir.startsWith("~/") || dir.startsWith("~\\")) {
+    return path.join(os.homedir(), dir.slice(2))
+  }
+  if (dir === "~") return os.homedir()
+  return path.resolve(dir)
+}
 
 export function isExcludedDirectory(directory: string): boolean {
   if (!directory) return true
-  const normalized = path.resolve(directory).toLowerCase()
+  const resolved = resolveDirectory(directory)
+  const normalized = resolved.toLowerCase()
   const home = os.homedir().toLowerCase()
   if (normalized === home) return true
 
@@ -57,7 +48,7 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
   const theme = props.context.theme
   const session = createMemo(() => props.context.data.session.get(props.sessionID))
   const location = createMemo(
-    () => session()?.location ?? props.context.data.location.default(),
+    () => session()?.location ?? props.context.location ?? props.context.data.location.default(),
     undefined,
     { equals: (a, b) => a?.directory === b?.directory },
   )
@@ -68,54 +59,22 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
     const vcsInfo = props.context.data.location.vcs?.info(loc)
     if (vcsInfo?.branch?.current) return true
     try {
-      if (fs.existsSync(path.join(loc.directory, ".git"))) return true
+      const dir = resolveDirectory(loc.directory)
+      if (fs.existsSync(path.join(dir, ".git"))) return true
     } catch {
       return false
     }
     return false
   })
 
-  const [projectEntries] = createResource(
-    () => {
-      const loc = location()
-      if (hasVcs() || !loc || isExcludedDirectory(loc.directory)) return null
-      return loc
-    },
-    async (loc) => {
-      const clientFs = (props.context.client as any)?.fs
-      if (clientFs?.list) {
-        try {
-          const res = await clientFs.list({ location: loc, path: "" })
-          return (res?.data ?? []) as Array<{ path: string }>
-        } catch {
-          return []
-        }
-      }
-      return []
-    },
-  )
-
-  const isCandidateProject = createMemo(() => {
-    if (hasVcs()) return false
+  const isExcluded = createMemo(() => {
     const loc = location()
-    if (!loc || isExcludedDirectory(loc.directory)) return false
+    if (!loc) return true
+    return isExcludedDirectory(loc.directory)
+  })
 
-    const entries = projectEntries()
-    if (entries && entries.length > 0) {
-      if (entries.some((e) => PROJECT_MARKERS.has(e.path.replace(/[/\\]+$/, "").toLowerCase()))) {
-        return true
-      }
-    }
-
-    try {
-      for (const marker of PROJECT_MARKERS) {
-        if (fs.existsSync(path.join(loc.directory, marker))) {
-          return true
-        }
-      }
-    } catch {}
-
-    return false
+  const canInitGit = createMemo(() => {
+    return !hasVcs() && !isExcluded()
   })
 
   const [initializing, setInitializing] = createSignal(false)
@@ -295,10 +254,10 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
           when={files().length > 0}
           fallback={
             <text
-              fg={isCandidateProject() ? (theme.text.feedback?.info?.base ?? theme.text.muted) : theme.text.muted}
+              fg={!hasVcs() ? (theme.text.feedback?.info?.base ?? theme.text.muted) : theme.text.muted}
               attributes={TextAttributes.DIM}
             >
-              {isCandidateProject() ? "no git" : "clean"}
+              {!hasVcs() ? "no git" : "clean"}
             </text>
           }
         >
@@ -319,7 +278,7 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
         <Match when={diff.loading && files().length === 0}>
           <text fg={theme.text.muted}>Loading diff…</text>
         </Match>
-        <Match when={!diff.loading && files().length === 0 && isCandidateProject()}>
+        <Match when={!diff.loading && files().length === 0 && canInitGit()}>
           <box flexDirection="column" gap={0} marginTop={0}>
             <text fg={theme.text.muted} attributes={TextAttributes.DIM}>
               No Git repository
@@ -342,6 +301,11 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
               </text>
             </box>
           </box>
+        </Match>
+        <Match when={!diff.loading && files().length === 0 && !hasVcs()}>
+          <text fg={theme.text.muted} attributes={TextAttributes.DIM}>
+            No Git repository
+          </text>
         </Match>
         <Match when={!diff.loading && files().length === 0}>
           <text fg={theme.text.muted} attributes={TextAttributes.DIM}>
@@ -477,7 +441,7 @@ export default Plugin.define({
           title: "Initialize Git repository",
           group: "VCS",
           palette: true,
-          slash: { name: "init" },
+          slash: { name: "git-init", aliases: ["gitinit"] },
           async run() {
             const loc = context.location
             if (!loc) return

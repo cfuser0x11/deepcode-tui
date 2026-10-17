@@ -8,18 +8,22 @@ import os from "node:os"
 import path from "node:path"
 
 function mockContext(options?: {
+  directory?: string
+  hasVcs?: boolean
   vcsWorking?: Array<{ file: string; additions: number; deletions: number; status: "added" | "deleted" | "modified"; patch?: string }>
   files?: Array<{ path: string; type: "file" | "directory" }>
 }) {
   const color = RGBA.fromInts(200, 200, 200)
   const green = RGBA.fromInts(0, 255, 0)
   const red = RGBA.fromInts(255, 0, 0)
+  const dir = options?.directory ?? "/workspace"
+  const hasVcs = options?.hasVcs ?? true
   return {
     theme: {
       text: {
         base: color,
         muted: color,
-        action: { secondary: { base: color }, primary: { base: color, hover: color } },
+        action: { secondary: { base: color }, primary: { base: color, hovered: color } },
         feedback: { warning: { base: color }, info: { base: color } },
       },
       diff: {
@@ -34,19 +38,24 @@ function mockContext(options?: {
         raised: { high: color, base: color },
       },
     },
+    location: { directory: dir },
     data: {
       session: {
-        get: () => ({ location: { directory: "/workspace" } }),
+        get: () => ({ location: { directory: dir } }),
         status: () => "idle",
         message: { list: () => [] },
       },
       location: {
-        default: () => ({ directory: "/workspace" }),
+        default: () => ({ directory: dir }),
+        vcs: {
+          info: () => (hasVcs ? { branch: { current: "main" } } : undefined),
+          sync: async () => {},
+        },
       },
     },
     client: {
       fs: {
-        list: async () => ({ location: { directory: "/workspace" }, data: options?.files ?? [] }),
+        list: async () => ({ location: { directory: dir }, data: options?.files ?? [] }),
       },
       vcs: {
         diff: async (params: any) => {
@@ -125,7 +134,8 @@ test("sidebar diff offers Git initialization when candidate project has no VCS",
     () =>
       <SidebarDiff
         context={mockContext({
-          files: [{ path: "package.json", type: "file" }],
+          hasVcs: false,
+          directory: "/workspace/ruff",
         })}
         sessionID="session"
       />,
@@ -147,6 +157,36 @@ test("sidebar diff offers Git initialization when candidate project has no VCS",
   }
 })
 
+test("sidebar diff does not offer Git initialization in excluded home directory", async () => {
+  const home = os.homedir()
+  const app = await testRender(
+    () =>
+      <SidebarDiff
+        context={mockContext({
+          hasVcs: false,
+          directory: home,
+        })}
+        sessionID="session"
+      />,
+    {
+      width: 42,
+      height: 8,
+    },
+  )
+
+  try {
+    await new Promise((r) => setTimeout(r, 20))
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Diff")
+    expect(frame).toContain("no git")
+    expect(frame).toContain("No Git repository")
+    expect(frame).not.toContain("Initialize Git repository")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
 test("isExcludedDirectory correctly filters system, root, and home directories", () => {
   const home = os.homedir()
   expect(isExcludedDirectory(home)).toBe(true)
@@ -158,5 +198,6 @@ test("isExcludedDirectory correctly filters system, root, and home directories",
 
   // Normal project subdirectories are NOT excluded
   expect(isExcludedDirectory(path.join(home, "Desktop", "my-project"))).toBe(false)
+  expect(isExcludedDirectory(path.join(home, "Desktop", "ruff"))).toBe(false)
   expect(isExcludedDirectory(path.join(home, "Projects", "frontend"))).toBe(false)
 })
