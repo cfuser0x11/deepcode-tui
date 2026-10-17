@@ -119,28 +119,28 @@ export const baseTranscript = (input: {
   const isStateful = Boolean(activeConversationId && input.model.model.provider === "deepseek")
 
   if (isStateful) {
-    const lastAsstIdx = input.messages.findLastIndex((m) => m.type === "assistant")
-    let deltaMessages: readonly SessionMessage.Info[]
-    if (lastAsstIdx !== -1 && lastAsstIdx < input.messages.length - 1) {
-      deltaMessages = input.messages.slice(lastAsstIdx + 1)
-    } else if (lastAsstIdx !== -1 && lastAsstIdx === input.messages.length - 1) {
+    const canonicalMessages = toLLMMessages(input.messages, input.model.ref, providerMetadataKey)
+    const lastAsstIdx = canonicalMessages.findLastIndex((m) => m.role === "assistant")
+    let deltaMessages: Message[]
+    if (lastAsstIdx !== -1 && lastAsstIdx < canonicalMessages.length - 1) {
+      deltaMessages = canonicalMessages.slice(lastAsstIdx + 1)
+    } else if (lastAsstIdx !== -1 && lastAsstIdx === canonicalMessages.length - 1) {
       deltaMessages = [
-        {
-          id: ("msg_cont_" + Date.now()) as any,
-          type: "user",
-          text: "Continue your work and proceed to the next step.",
-          time: { created: Date.now() },
-        } as any,
+        Message.make({
+          id: "msg_cont_" + Date.now(),
+          role: "user",
+          content: "Continue your work and proceed to the next step.",
+        }),
       ]
     } else {
-      deltaMessages = input.messages.filter((m) => m.type !== "system")
+      deltaMessages = canonicalMessages.filter((m) => m.role !== "system")
     }
 
     return {
       providerMetadataKey,
       conversationId: activeConversationId,
       system: [],
-      messages: toLLMMessages(deltaMessages, input.model.ref, providerMetadataKey),
+      messages: deltaMessages,
     }
   }
 

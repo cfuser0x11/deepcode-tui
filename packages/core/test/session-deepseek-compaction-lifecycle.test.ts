@@ -318,4 +318,62 @@ describe("DeepSeek stateful conversation & compaction lifecycle", () => {
     expect(msgs[0]?.content).toContain("Task 4: Add indexing to user lookup")
     expect(msgs[0]?.content).toContain("[SYSTEM REMINDER]")
   })
+
+  test("Tool execution turn: stateful turn sends tool result delta message instead of synthetic continue message", async () => {
+    const user1 = SessionMessage.User.make({
+      id: SessionMessage.ID.create(),
+      type: "user",
+      text: "List files in directory",
+      time: { created: DateTime.makeUnsafe(100) },
+    })
+
+    const asstWithTool = {
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      model: { providerID: "deepseek", modelID: "deepseek-chat" },
+      providerState: { conversationId: "conv-deepseek-tool-1" },
+      content: [
+        { type: "reasoning", text: "I need to check the files." },
+        {
+          type: "tool",
+          id: "call_shell_1",
+          name: "shell",
+          executed: false,
+          state: {
+            status: "completed",
+            input: { command: "ls" },
+            content: [{ type: "text", text: "package.json\nsrc\nREADME.md" }],
+          },
+          time: { created: DateTime.makeUnsafe(200) },
+        },
+      ],
+      time: { created: DateTime.makeUnsafe(200), completed: DateTime.makeUnsafe(250) },
+    } as unknown as SessionMessage.Info
+
+    const messages = [user1, asstWithTool]
+    expect(SessionProviderContext.activeConversationId(messages)).toBe("conv-deepseek-tool-1")
+
+    const transcript = SessionModelRequest.baseTranscript({
+      agent,
+      model: deepseekModel,
+      tools,
+      initial: initialInstructions,
+      messages,
+    })
+
+    expect(transcript.conversationId).toBe("conv-deepseek-tool-1")
+    expect(transcript.system).toEqual([])
+    // Must contain the tool result message, NOT a synthetic "Continue your work" user message!
+    expect(transcript.messages).toHaveLength(1)
+    expect(transcript.messages[0]?.role).toBe("tool")
+
+    const body = await Effect.runPromise(compileBody(transcript))
+    expect(body.conversation_id).toBe("conv-deepseek-tool-1:2")
+    const msgs = body.messages as Array<{ role: string; content: string; tool_call_id?: string }>
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]?.role).toBe("tool")
+    expect(msgs[0]?.content).toContain("package.json\nsrc\nREADME.md")
+    expect(msgs[0]?.tool_call_id).toBe("call_shell_1")
+  })
 })
+
