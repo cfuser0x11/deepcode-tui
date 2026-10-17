@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { Message, ToolResultPart, Media } from "@opencode/ai"
-import { boundImages, unsupportedParts } from "@opencode/core/session/model-request"
+import { LanguageModel, Message, ToolResultPart, Media } from "@opencode/ai"
+import { OpenAIChat } from "@opencode/ai/protocols"
+import { Agent } from "@opencode/core/agent"
+import { SessionMessage } from "@opencode/core/session/message"
+import { SessionModelRequest, boundImages, unsupportedParts } from "@opencode/core/session/model-request"
+import { SessionRunnerModel } from "@opencode/core/session/runner/model"
 
 const capabilities = (input: string[]) => ({ tools: true, input, output: ["text"] })
 
@@ -230,3 +234,101 @@ describe("SessionModelRequest.boundImages", () => {
     })
   })
 })
+
+describe("SessionModelRequest.baseTranscript", () => {
+  const deepseekModel = SessionRunnerModel.resolved(
+    LanguageModel.make({ id: "deepseek-chat", provider: "deepseek", route: OpenAIChat.route }),
+    {
+      capabilities: { tools: true, input: ["text"], output: ["text"] },
+      cost: [],
+      limit: { context: 64000, output: 4000 },
+    },
+  )
+
+  const openaiModel = SessionRunnerModel.resolved(
+    LanguageModel.make({ id: "gpt-4o", provider: "openai", route: OpenAIChat.route }),
+    {
+      capabilities: { tools: true, input: ["text"], output: ["text"] },
+      cost: [],
+      limit: { context: 128000, output: 4000 },
+    },
+  )
+
+  const agent = Agent.Info.default(Agent.defaultID)
+  const tools = { definitions: [], execute: () => {} } as any
+
+  test("returns delta turn and conversationId for stateful deepseek provider", () => {
+    const user1 = { id: SessionMessage.ID.create(), type: "user", text: "step 1" } as SessionMessage.Info
+    const asst1 = {
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      model: { providerID: "deepseek", modelID: "deepseek-chat" },
+      providerState: { conversationId: "conv-1:2" },
+      content: [{ type: "text", text: "resp 1" }],
+    } as any
+    const user2 = { id: SessionMessage.ID.create(), type: "user", text: "step 2" } as SessionMessage.Info
+
+    const transcript = SessionModelRequest.baseTranscript({
+      agent,
+      model: deepseekModel,
+      tools,
+      initial: "Instruction baseline",
+      messages: [user1, asst1, user2],
+    })
+
+    expect(transcript.conversationId).toBe("conv-1:2")
+    expect(transcript.system).toEqual([])
+    expect(transcript.messages).toHaveLength(1)
+    expect(transcript.messages[0]?.role).toBe("user")
+  })
+
+  test("resets conversationId and sends full transcript when standalone is requested", () => {
+    const user1 = { id: SessionMessage.ID.create(), type: "user", text: "step 1" } as SessionMessage.Info
+    const asst1 = {
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      model: { providerID: "deepseek", modelID: "deepseek-chat" },
+      providerState: { conversationId: "conv-1:2" },
+      content: [{ type: "text", text: "resp 1" }],
+    } as any
+    const user2 = { id: SessionMessage.ID.create(), type: "user", text: "step 2" } as SessionMessage.Info
+
+    const transcript = SessionModelRequest.baseTranscript({
+      agent,
+      model: deepseekModel,
+      tools,
+      initial: "Instruction baseline",
+      messages: [user1, asst1, user2],
+      standalone: true,
+    })
+
+    expect(transcript.conversationId).toBeUndefined()
+    expect(transcript.system.length).toBeGreaterThan(0)
+    expect(transcript.messages).toHaveLength(3)
+  })
+
+  test("returns full transcript and instructions for stateless providers", () => {
+    const user1 = { id: SessionMessage.ID.create(), type: "user", text: "step 1" } as SessionMessage.Info
+    const asst1 = {
+      id: SessionMessage.ID.create(),
+      type: "assistant",
+      model: { providerID: "deepseek", modelID: "deepseek-chat" },
+      providerState: { conversationId: "conv-1:2" },
+      content: [{ type: "text", text: "resp 1" }],
+    } as any
+    const user2 = { id: SessionMessage.ID.create(), type: "user", text: "step 2" } as SessionMessage.Info
+
+    const transcript = SessionModelRequest.baseTranscript({
+      agent,
+      model: openaiModel,
+      tools,
+      initial: "Instruction baseline",
+      messages: [user1, asst1, user2],
+    })
+
+    expect(transcript.conversationId).toBeUndefined()
+    expect(transcript.system.length).toBeGreaterThan(0)
+    expect(transcript.messages).toHaveLength(3)
+  })
+})
+

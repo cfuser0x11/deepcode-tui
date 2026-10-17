@@ -82,6 +82,7 @@ export interface Input {
   readonly webSocket?: "session"
   /** Prompt size, measured by the provider or estimated. The default output limit leaves room for it. */
   readonly inputTokens?: { readonly measured: number; readonly estimated: number }
+  readonly metadata?: Record<string, unknown>
 }
 
 /** The default output limit: the catalog limit, fitted to the room the prompt leaves in the context window. */
@@ -103,6 +104,7 @@ export const baseTranscript = (input: {
   readonly tools: Tool.Snapshot
   readonly initial: string
   readonly messages: ReadonlyArray<SessionMessage.Info>
+  readonly standalone?: boolean
 }) => {
   const isDead = Boolean(
     input.model.model.id.endsWith("-dead") ||
@@ -111,8 +113,40 @@ export const baseTranscript = (input: {
     process.env.DEAD_MODE === "1",
   )
   const providerMetadataKey = input.model.model.route.providerMetadataKey ?? input.model.model.provider
+
+  const activeConversationId =
+    input.standalone === true ? undefined : SessionProviderContext.activeConversationId(input.messages)
+  const isStateful = Boolean(activeConversationId && input.model.model.provider === "deepseek")
+
+  if (isStateful) {
+    const lastAsstIdx = input.messages.findLastIndex((m) => m.type === "assistant")
+    let deltaMessages: readonly SessionMessage.Info[]
+    if (lastAsstIdx !== -1 && lastAsstIdx < input.messages.length - 1) {
+      deltaMessages = input.messages.slice(lastAsstIdx + 1)
+    } else if (lastAsstIdx !== -1 && lastAsstIdx === input.messages.length - 1) {
+      deltaMessages = [
+        {
+          id: ("msg_cont_" + Date.now()) as any,
+          type: "user",
+          text: "Continue your work and proceed to the next step.",
+          time: { created: Date.now() },
+        } as any,
+      ]
+    } else {
+      deltaMessages = input.messages.filter((m) => m.type !== "system")
+    }
+
+    return {
+      providerMetadataKey,
+      conversationId: activeConversationId,
+      system: [],
+      messages: toLLMMessages(deltaMessages, input.model.ref, providerMetadataKey),
+    }
+  }
+
   return {
     providerMetadataKey,
+    conversationId: undefined,
     system: isDead
       ? []
       : [
@@ -127,7 +161,6 @@ export const baseTranscript = (input: {
           .map(SystemPart.make),
     messages: toLLMMessages(input.messages, input.model.ref, providerMetadataKey),
   }
-
 }
 
 const mimeToModality = (mime: string) => {
@@ -317,6 +350,7 @@ export const layer = Layer.effect(
         toolChoice: input.toolChoice,
         generation: Object.keys(generation).length === 0 ? undefined : generation,
         providerOptions: Object.keys(providerOptions).length === 0 ? undefined : providerOptions,
+        metadata: input.metadata,
       })
 
       const baseURL = base.model.route.endpoint.baseURL

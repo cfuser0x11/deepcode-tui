@@ -12,7 +12,7 @@ Use the \`execute\` tool to call the tools listed below. They cannot be called d
 
 ${hasMoreTools ? `The catalog is partial. Inside \`execute\`, use \`search(...)\` to find a tool, then call it by the \`path\` in the result. \`search\` is synchronous. Call it without \`await\`; it does not return a Promise. Do not guess tool names.
 
-- ${searchSignature}` : "The catalog is complete. Do not guess tool names."}
+- ${searchSignature}` : "The catalog is complete. Do not guess tool names. This section applies only to Code Mode tools called via `execute`; standard direct workspace tools (shell, read, write, edit) remain active and available directly."}
 
 ## Available tools`
 

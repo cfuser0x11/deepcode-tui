@@ -337,6 +337,28 @@ describe("OpenAI Chat route", () => {
     ),
   )
 
+  it.effect("lowers conversationId to request body", () =>
+    Effect.gen(function* () {
+      const preparedWithColon = yield* compileRequest(
+        LLM.request({
+          model,
+          prompt: "Hello",
+          metadata: { conversationId: "conv-123:4" },
+        }),
+      )
+      expect(preparedWithColon.body.conversation_id).toBe("conv-123:4")
+
+      const preparedWithoutColon = yield* compileRequest(
+        LLM.request({
+          model,
+          prompt: "Hello",
+          metadata: { conversationId: "conv-123" },
+        }),
+      )
+      expect(preparedWithoutColon.body.conversation_id).toBe("conv-123:2")
+    }),
+  )
+
   it.effect("passes through custom OpenAI-compatible reasoning effort strings", () =>
     Effect.gen(function* () {
       const prepared = yield* compileRequest(
@@ -2267,4 +2289,29 @@ describe("OpenAI Chat route", () => {
       expect(events.map((event) => event.type)).toEqual(["step-start"])
     }),
   )
+
+  it.effect("extracts conversation_id from stream event into stepMetadata and step-finish event", () =>
+    Effect.gen(function* () {
+      const body = sseEvents(
+        {
+          id: "1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "gpt-4o-mini",
+          conversation_id: "conv-abc:3",
+          choices: [{ index: 0, delta: { role: "assistant", content: "Hello" }, finish_reason: null }],
+        },
+        deltaChunk({}, "stop"),
+      )
+      const events = Array.from(
+        yield* LLMClient.stream(request).pipe(Stream.runCollect, Effect.provide(fixedResponse(body))),
+      )
+      const stepFinish = events.find((event) => event.type === "step-finish")
+      expect(stepFinish).toBeDefined()
+      expect(stepFinish?.providerMetadata).toEqual({
+        openai: { conversationId: "conv-abc:3" },
+      })
+    }),
+  )
 })
+

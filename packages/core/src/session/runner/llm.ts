@@ -36,7 +36,7 @@ const CONTINUE_AFTER_INCOMPLETE_STREAM =
   "The previous response was interrupted. Continue from where you left off without repeating completed content."
 
 const NUDGE_STEP1_PROMPT =
-  "CRITICAL EXECUTION: Do NOT output conversational monologue, explanations, or simulate tool execution (like 'Tool: ...' or 'Assistant: ...'). Invoke the required tool call directly using XML/DSML tags, for example:\n<tool_call name=\"write\">\n<path>filepath</path>\n<content>file_contents</content>\n</tool_call>\nor\n<tool_call name=\"shell\">\n<command>command</command>\n</tool_call>\nNo preamble. Output the tool call now."
+  "CRITICAL EXECUTION: Do NOT output conversational monologue, explanations, or simulate tool execution (like 'Tool: ...' or 'Assistant: ...'). Keep thinking brief and invoke the required tool call directly using XML/DSML tags, for example:\n<tool_call name=\"write\">\n<path>filepath</path>\n<content>file_contents</content>\n</tool_call>\nor\n<tool_call name=\"shell\">\n<command>command</command>\n</tool_call>\nNo preamble. Output the tool call now."
 
 const NUDGE_STEP2_PROMPT =
   "SYSTEM UNSTUCK: You have produced monologue or stopped without executing tools. Call the appropriate tool now using XML tags (<tool_call name=\"...\">) to proceed with execution, or output <end_working> followed by your final summary if all tasks are completed. Do not simulate 'Tool:' or 'Assistant:' in plain text."
@@ -45,7 +45,7 @@ const NUDGE_STEP3_PROMPT =
   "CRITICAL: Execute the next planned task now by invoking a tool call using <tool_call name=\"...\"> tags. Do NOT output conversational monologue, code blocks, or simulated 'Tool:' in chat."
 
 const NUDGE_EMPTY_PROMPT =
-  "CRITICAL: You produced an empty response without executing tools. If you need to inspect files or run commands, invoke the tool call directly using <tool_call name=\"write\"> or <tool_call name=\"shell\">. Do not simulate 'Tool:' in chat. If all tasks are completed, provide your final summary in plain text without <end_working>."
+  "CRITICAL EXECUTION: Your previous response was empty because thinking consumed all output tokens before emitting a tool call. KEEP YOUR THINKING VERY BRIEF (<10 lines) and emit the required tool call IMMEDIATELY using XML tags (e.g. <tool_call name=\"read\">, <tool_call name=\"edit\">, or <tool_call name=\"shell\">). If tasks are finished, output your final summary directly."
 
 const layer = Layer.effect(
   Service,
@@ -264,6 +264,7 @@ const layer = Layer.effect(
           toolChoice: stepLimitReached ? "none" : undefined,
           webSocket: "session",
           inputTokens: SessionCompaction.estimatePrompt(loaded),
+          metadata: transcript.conversationId ? { conversationId: transcript.conversationId } : undefined,
         })
         const hadExplorationTools = loaded.messages.some(
           (m) =>

@@ -366,3 +366,42 @@ it.effect("rejects malformed persisted native windows instead of silently droppi
     expect(yield* store.context(sessionID).pipe(Effect.flip)).toMatchObject({ _tag: "Session.MessageDecodeError" })
   }),
 )
+
+test("activeConversationId returns latest assistant conversationId and resets after compaction", () => {
+  const user1 = { id: SessionMessage.ID.create(), type: "user", text: "hi" } as unknown as SessionMessage.Info
+  const asst1 = {
+    id: SessionMessage.ID.create(),
+    type: "assistant",
+    providerState: { conversationId: "conv-1:2" },
+  } as unknown as SessionMessage.Info
+  const user2 = { id: SessionMessage.ID.create(), type: "user", text: "next" } as unknown as SessionMessage.Info
+  const asst2 = {
+    id: SessionMessage.ID.create(),
+    type: "assistant",
+    providerState: { conversationId: "conv-1:4" },
+  } as unknown as SessionMessage.Info
+
+  expect(SessionProviderContext.activeConversationId([user1])).toBeUndefined()
+  expect(SessionProviderContext.activeConversationId([user1, asst1, user2])).toBe("conv-1:2")
+  expect(SessionProviderContext.activeConversationId([user1, asst1, user2, asst2])).toBe("conv-1:4")
+
+  // Intervening completed compaction resets conversation ID
+  const compact = {
+    id: SessionMessage.ID.create(),
+    type: "compaction",
+    status: "completed",
+    summary: "=== COMPACTED AGENT CONTEXT ===",
+    recent: "recent text",
+  } as unknown as SessionMessage.Info
+  const user3 = { id: SessionMessage.ID.create(), type: "user", text: "after compact" } as unknown as SessionMessage.Info
+
+  expect(SessionProviderContext.activeConversationId([user1, asst1, user2, asst2, compact, user3])).toBeUndefined()
+
+  // New assistant after compaction establishes new conversation ID
+  const asst3 = {
+    id: SessionMessage.ID.create(),
+    type: "assistant",
+    providerState: { conversationId: "conv-2:2" },
+  } as unknown as SessionMessage.Info
+  expect(SessionProviderContext.activeConversationId([user1, asst1, user2, asst2, compact, user3, asst3])).toBe("conv-2:2")
+})

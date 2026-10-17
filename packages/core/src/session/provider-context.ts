@@ -82,3 +82,25 @@ function upgradeLegacyMedia(input: Info["messages"]) {
     }
   })
 }
+
+/**
+ * Resolves the active upstream conversation ID for stateful providers (e.g. DeepSeek Web).
+ * Traverses backwards from the latest message up to the nearest completed compaction checkpoint.
+ * If a compaction intervened, older conversation IDs are invalid for the new compacted phase.
+ */
+export function activeConversationId(messages: ReadonlyArray<SessionMessage.Info>): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.type === "compaction" && message.status === "completed") {
+      return undefined
+    }
+    if (
+      message.type === "assistant" &&
+      message.providerState &&
+      typeof (message.providerState as any).conversationId === "string"
+    ) {
+      return (message.providerState as any).conversationId
+    }
+  }
+  return undefined
+}

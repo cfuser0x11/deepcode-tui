@@ -40,6 +40,12 @@ export function render(prompt: string, tools: string[], options?: { deadMode?: b
       "- Use the edit tool for targeted changes to existing text files. It replaces the exact text in `oldString` with `newString`, and the values must differ. By default, `oldString` must occur exactly once. If it occurs multiple times, include more surrounding context to make it unique or set `replaceAll` to true to replace every occurrence.",
     )
   }
+  const workspaceTools = tools.filter((t) => ["shell", "write", "edit", "read", "patch"].includes(t))
+  if (workspaceTools.length > 0) {
+    instructions.push(
+      `- Direct workspace tools (${workspaceTools.join(", ")}) are always active. Use native tool calling or format calls as \`<tool_call name="tool_name">{"param": "value"}</tool_call>\`.`,
+    )
+  }
   return prompt.replace("${OPENCODE_TOOL_GUIDANCE}", instructions.join("\n"))
 }
 

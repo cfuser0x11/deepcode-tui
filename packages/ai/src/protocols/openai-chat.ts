@@ -191,6 +191,7 @@ export const bodyFields = {
   presence_penalty: Schema.optional(Schema.Number),
   seed: Schema.optional(Schema.Number),
   stop: optionalArray(Schema.String),
+  conversation_id: Schema.optional(Schema.String),
 }
 const OpenAIChatBody = Schema.Struct(bodyFields)
 export type OpenAIChatBody = Schema.Schema.Type<typeof OpenAIChatBody>
@@ -318,6 +319,7 @@ export interface ParserState {
   readonly requireFinishReason: boolean
   readonly pendingContent?: string
   readonly emittedToolIds?: readonly string[]
+  readonly conversationId?: string
 }
 
 // =============================================================================
@@ -894,8 +896,22 @@ export const fromRequest = Effect.fn("OpenAIChat.fromRequest")(function* (
     seed: generation?.seed,
     stop: generation?.stop,
     ...lowerOptions(request, supportsStore),
+    ...lowerConversationId(request),
   }
 })
+
+const lowerConversationId = (request: LLMRequest) => {
+  const raw =
+    (request.metadata?.conversationId as string | undefined) ??
+    (request.providerOptions as any)?.conversationId ??
+    (request.providerOptions as any)?.conversation_id
+  if (!raw || typeof raw !== "string") return {}
+  let conversation_id = raw.trim()
+  if (!conversation_id.includes(":") && !conversation_id.startsWith("chat_")) {
+    conversation_id = `${conversation_id}:2`
+  }
+  return { conversation_id }
+}
 
 // =============================================================================
 // Stream Parsing
@@ -1097,6 +1113,12 @@ const step = (state: ParserState, event: OpenAIChatEvent) =>
       })
     }
     const events: LLMEvent[] = []
+    const chunkConvId =
+      (event as any).conversation_id ??
+      (event as any).data?.conversation_id ??
+      (event as any).conversationId
+    const conversationId =
+      typeof chunkConvId === "string" && chunkConvId.trim() ? chunkConvId.trim() : state.conversationId
     const choice = event.choices?.[0]
     // Moonshot (and a few other OpenAI-compatible providers) attach usage to
     // `choice.usage` instead of the top-level `usage` field.
@@ -1313,6 +1335,7 @@ const step = (state: ParserState, event: OpenAIChatEvent) =>
         requireFinishReason: state.requireFinishReason,
         pendingContent,
         emittedToolIds,
+        conversationId,
       },
       events,
     ] as const
@@ -1393,7 +1416,10 @@ export const finishEvents = Effect.fnUntraced(function* (state: ParserState) {
   })
   const finalLifecycle = unEmittedTools.length ? Lifecycle.stepStart(ended, events) : ended
   events.push(...unEmittedTools)
-  Lifecycle.finish(finalLifecycle, events, { reason, usage: state.usage })
+  const stepMetadata = state.conversationId
+    ? { [state.providerMetadataKey]: { conversationId: state.conversationId } }
+    : undefined
+  Lifecycle.finish(finalLifecycle, events, { reason, usage: state.usage, providerMetadata: stepMetadata })
   return events
 })
 
@@ -1428,6 +1454,7 @@ export const protocol = Protocol.make({
       nextToolIndex: 0,
       requireFinishReason: request.model.compatibility?.requireFinishReason ?? true,
       pendingContent: "",
+      conversationId: undefined,
     }),
     step: (state: ParserState, event) => (event === DONE ? Effect.succeed([state, []] as const) : step(state, event)),
     terminal: (event) => event === DONE,
