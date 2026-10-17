@@ -175,6 +175,30 @@ const table = sqliteTable("session", {
 - Run `bun run check` from the repository root as the canonical full lint and type-check verification.
 - During focused iteration, run `bun typecheck` from the affected package directory (for example, `packages/core`). Never run `tsc` directly.
 
+## Code Graph Navigation
+
+- Use `code-graph-mcp` to explore unfamiliar modules and inspect call hierarchies before reading files one by one.
+- **Workflow**: `overview` / `map` first → read only the specific files targeted for edits.
+- Use `code-graph-mcp grep "<pattern>" [path]` for code searches to get AST-level context (containing function/class) rather than uncontextualized text hits. Reserve standard grep for non-code files (configs, markdown, logs) or exact string searches where AST context is unnecessary.
+- Check blast radius with `code-graph-mcp impact <symbol>` or callers with `code-graph-mcp callgraph <symbol> [--direction callers|callees]` before altering public signatures or shared internal functions.
+- If the index is missing or out of date, run `code-graph-mcp incremental-index` or check health via `code-graph-mcp health-check`.
+
+### Code Graph Command Quick Reference
+
+| Intent | Command | Purpose |
+|---|---|---|
+| Project Architecture | `code-graph-mcp map --compact` | High-level module map, dependency volume, entry points |
+| Module Overview | `code-graph-mcp overview <path> --compact` | File symbols grouped by type; avoids multi-file reads |
+| Call Hierarchy | `code-graph-mcp callgraph <symbol> [--direction callers\|callees]` | Callers and callees across packages |
+| Blast Radius / Impact | `code-graph-mcp impact <symbol> [--change-type signature\|behavior]` | Downstream impact analysis and route risks |
+| References | `code-graph-mcp refs <symbol> [--min-confidence extracted]` | References, callers, and imports |
+| Concept Search | `code-graph-mcp search "<concept>"` | FTS5 symbol and documentation search |
+| Structured AST Search | `code-graph-mcp ast-search "<query>" --type fn\|class` | Filter symbols by type, parameters, or return type |
+| Symbol Code / Signature | `code-graph-mcp show <symbol> [--compact]` | Symbol declaration and implementation |
+| File Dependencies | `code-graph-mcp deps <file>` | Direct imports and dependants |
+| Unused Code | `code-graph-mcp dead-code [path]` | Orphan symbols and unexported declarations |
+| Index Refresh | `code-graph-mcp incremental-index` | Refresh index incrementally after major changes |
+
 ## V2 Session Core
 
 - Keep durable events minimal: record irreducible new facts and do not repeat state derivable by folding the ordered aggregate history. Enrich projections and read models with previous or derived state when consumers need self-contained views.

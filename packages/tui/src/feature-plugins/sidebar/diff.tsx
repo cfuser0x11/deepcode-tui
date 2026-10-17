@@ -1,8 +1,10 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { createEffect, createMemo, createResource, createSignal, For, Match, onCleanup, Show, Switch } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, For, Match, Show, Switch } from "solid-js"
 import { MouseButton, TextAttributes } from "@opentui/core"
 import { truncateFilePath } from "../../ui/file-path"
-import type { FileDiffInfo } from "@opencode/client"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 export type DiffFile = {
   readonly file: string
@@ -10,6 +12,45 @@ export type DiffFile = {
   readonly additions: number
   readonly deletions: number
   readonly status: "added" | "deleted" | "modified"
+}
+
+const PROJECT_MARKERS = new Set([
+  "package.json",
+  "tsconfig.json",
+  "cargo.toml",
+  "go.mod",
+  "pyproject.toml",
+  "requirements.txt",
+  "pipfile",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "composer.json",
+  "gemfile",
+  "cmakelists.txt",
+  "makefile",
+  ".opencode",
+  ".deepcode",
+])
+
+export function isExcludedDirectory(directory: string): boolean {
+  if (!directory) return true
+  const normalized = path.resolve(directory).toLowerCase()
+  const home = os.homedir().toLowerCase()
+  if (normalized === home) return true
+
+  const root = path.parse(normalized).root.toLowerCase()
+  if (normalized === root) return true
+
+  const excludedSubdirs = ["desktop", "downloads", "temp", "tmp", "documents"]
+  for (const name of excludedSubdirs) {
+    if (normalized === path.join(home, name).toLowerCase()) return true
+  }
+
+  const tempDir = os.tmpdir().toLowerCase()
+  if (normalized === tempDir) return true
+
+  return false
 }
 
 export function SidebarDiff(props: { context: Plugin.Context; sessionID: string }) {
@@ -20,6 +61,102 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
     undefined,
     { equals: (a, b) => a?.directory === b?.directory },
   )
+
+  const hasVcs = createMemo(() => {
+    const loc = location()
+    if (!loc) return false
+    const vcsInfo = props.context.data.location.vcs?.info(loc)
+    if (vcsInfo?.branch?.current) return true
+    try {
+      if (fs.existsSync(path.join(loc.directory, ".git"))) return true
+    } catch {
+      return false
+    }
+    return false
+  })
+
+  const [projectEntries] = createResource(
+    () => {
+      const loc = location()
+      if (hasVcs() || !loc || isExcludedDirectory(loc.directory)) return null
+      return loc
+    },
+    async (loc) => {
+      const clientFs = (props.context.client as any)?.fs
+      if (clientFs?.list) {
+        try {
+          const res = await clientFs.list({ location: loc, path: "" })
+          return (res?.data ?? []) as Array<{ path: string }>
+        } catch {
+          return []
+        }
+      }
+      return []
+    },
+  )
+
+  const isCandidateProject = createMemo(() => {
+    if (hasVcs()) return false
+    const loc = location()
+    if (!loc || isExcludedDirectory(loc.directory)) return false
+
+    const entries = projectEntries()
+    if (entries && entries.length > 0) {
+      if (entries.some((e) => PROJECT_MARKERS.has(e.path.replace(/[/\\]+$/, "").toLowerCase()))) {
+        return true
+      }
+    }
+
+    try {
+      for (const marker of PROJECT_MARKERS) {
+        if (fs.existsSync(path.join(loc.directory, marker))) {
+          return true
+        }
+      }
+    } catch {}
+
+    return false
+  })
+
+  const [initializing, setInitializing] = createSignal(false)
+  const [initHovered, setInitHovered] = createSignal(false)
+
+  const handleInitGit = async () => {
+    if (initializing()) return
+    const loc = location()
+    if (!loc) return
+    const confirmed = props.context.ui.dialog
+      ? await props.context.ui.dialog.confirm({
+          title: "Initialize Git",
+          message: `Initialize Git repository in ${loc.directory}?`,
+          label: { confirm: "Initialize" },
+        })
+      : true
+    if (!confirmed) return
+
+    setInitializing(true)
+    try {
+      await props.context.client.vcs.init({
+        location: { directory: loc.directory },
+        provider: "git",
+      })
+      props.context.ui.toast.show({
+        title: "Git initialized",
+        message: `Initialized Git repository in ${loc.directory}`,
+        variant: "success",
+      })
+      await props.context.data.location.vcs?.sync?.(loc)
+      void refetch()
+    } catch (err: unknown) {
+      props.context.ui.toast.show({
+        title: "Git initialization failed",
+        message: err instanceof Error ? err.message : String(err),
+        variant: "error",
+      })
+    } finally {
+      setInitializing(false)
+    }
+  }
 
   const [expandedFiles, setExpandedFiles] = createSignal<Set<string>>(new Set())
   const [hoveredFile, setHoveredFile] = createSignal<string>()
@@ -157,8 +294,11 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
         <Show
           when={files().length > 0}
           fallback={
-            <text fg={theme.text.muted} attributes={TextAttributes.DIM}>
-              clean
+            <text
+              fg={isCandidateProject() ? (theme.text.feedback?.info?.base ?? theme.text.muted) : theme.text.muted}
+              attributes={TextAttributes.DIM}
+            >
+              {isCandidateProject() ? "no git" : "clean"}
             </text>
           }
         >
@@ -178,6 +318,30 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
       <Switch>
         <Match when={diff.loading && files().length === 0}>
           <text fg={theme.text.muted}>Loading diff…</text>
+        </Match>
+        <Match when={!diff.loading && files().length === 0 && isCandidateProject()}>
+          <box flexDirection="column" gap={0} marginTop={0}>
+            <text fg={theme.text.muted} attributes={TextAttributes.DIM}>
+              No Git repository
+            </text>
+            <box
+              marginTop={0}
+              flexDirection="row"
+              backgroundColor={initHovered() ? theme.background.raised.high : undefined}
+              onMouseOver={() => setInitHovered(true)}
+              onMouseOut={() => setInitHovered(false)}
+              onMouseUp={(e) => {
+                if (e.button === MouseButton.LEFT) void handleInitGit()
+              }}
+            >
+              <text
+                fg={initHovered() ? (theme.text.action.primary?.hovered ?? theme.text.base) : (theme.text.action.primary?.base ?? theme.text.base)}
+                attributes={TextAttributes.UNDERLINE}
+              >
+                {initializing() ? "Initializing Git…" : "Initialize Git repository"}
+              </text>
+            </box>
+          </box>
         </Match>
         <Match when={!diff.loading && files().length === 0}>
           <text fg={theme.text.muted} attributes={TextAttributes.DIM}>
@@ -305,5 +469,47 @@ export default Plugin.define({
       append: "sidebar.content",
       render: (props) => <SidebarDiff context={context} sessionID={props.sessionID} />,
     })
+    context.keymap.layer(() => ({
+      mode: "global",
+      commands: [
+        {
+          id: "vcs.init",
+          title: "Initialize Git repository",
+          group: "VCS",
+          palette: true,
+          slash: { name: "init" },
+          async run() {
+            const loc = context.location
+            if (!loc) return
+            const confirmed = context.ui.dialog
+              ? await context.ui.dialog.confirm({
+                  title: "Initialize Git",
+                  message: `Initialize Git repository in ${loc.directory}?`,
+                  label: { confirm: "Initialize" },
+                })
+              : true
+            if (!confirmed) return
+            try {
+              await context.client.vcs.init({
+                location: { directory: loc.directory },
+                provider: "git",
+              })
+              context.ui.toast?.show({
+                title: "Git initialized",
+                message: `Initialized Git repository in ${loc.directory}`,
+                variant: "success",
+              })
+              await context.data.location.vcs?.sync?.(loc)
+            } catch (err: unknown) {
+              context.ui.toast?.show({
+                title: "Git initialization failed",
+                message: err instanceof Error ? err.message : String(err),
+                variant: "error",
+              })
+            }
+          },
+        },
+      ],
+    }))
   },
 })

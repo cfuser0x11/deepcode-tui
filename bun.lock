@@ -112,7 +112,7 @@
     },
     "packages/cli": {
       "name": "@opencode/cli",
-      "version": "2.0.26",
+      "version": "2.0.27",
       "bin": {
         "opencode": "./bin/opencode.cjs",
         "opencode2": "./bin/opencode2.cjs",
@@ -928,7 +928,7 @@
     },
     "packages/tui": {
       "name": "@opencode/tui",
-      "version": "2.0.26",
+      "version": "2.0.27",
       "dependencies": {
         "@opencode/client": "workspace:*",
         "@opencode/core": "workspace:*",

@@ -57,7 +57,6 @@ import { LocationProvider, useLocation } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
 import { DialogModel } from "./component/dialog-model"
-import { useConnected } from "./component/use-connected"
 import { DialogMcp } from "./component/dialog-mcp"
 import { DialogStatus } from "./component/dialog-status"
 import { DialogConfig } from "./component/dialog-config"
@@ -700,7 +699,6 @@ function App() {
       .catch(toast.error)
   })
 
-  const connected = useConnected()
   const deadMode = useDeadMode()
   const appCommands = createMemo(() =>
     [

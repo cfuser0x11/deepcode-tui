@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
-import { LLM, Message, ToolDefinition } from "@opencode/ai"
+import { Message, ToolDefinition, type LLMRequest } from "@opencode/ai"
 import { JsonSchema } from "@opencode/ai/schema/options"
-import { countTokens, countMessageTokens, countToolTokens, estimateRequestTokens, estimateStepTokens } from "../src/session/tokenizer.js"
+import { countTokens, countMessageTokens, countToolTokens, estimateStepTokens } from "../src/session/tokenizer.js"
 
 describe("SessionTokenizer", () => {
   it("counts English text with BPE weights", () => {
@@ -12,9 +12,7 @@ describe("SessionTokenizer", () => {
   })
 
   it("calibrates for Russian Cyrillic text", () => {
-    const english = "Hello world"
     const russian = "Привет мир"
-    const engTokens = countTokens(english)
     const rusTokens = countTokens(russian)
     // Russian multi-byte utf8 chars should be counted with ~1.7 chars per token
     expect(rusTokens).toBeGreaterThan(0)

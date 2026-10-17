@@ -1,10 +1,8 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createMemo, Show } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
 import { FilePath } from "../../ui/file-path"
 import { useWorkingDirectoryActions } from "../../ui/working-directory-actions"
 import { usePromptMove } from "../../component/prompt/move"
-import { hasConnectedProvider } from "../../util/connected-provider"
 
 export function SidebarOnboarding(props: { context: Plugin.Context; sessionID: string }) {
   return null

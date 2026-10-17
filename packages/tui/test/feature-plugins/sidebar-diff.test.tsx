@@ -3,10 +3,13 @@ import { expect, test } from "bun:test"
 import { RGBA } from "@opentui/core"
 import { testRender } from "@opentui/solid"
 import type { Context } from "@opencode/plugin/tui/context"
-import { SidebarDiff } from "../../src/feature-plugins/sidebar/diff"
+import { isExcludedDirectory, SidebarDiff } from "../../src/feature-plugins/sidebar/diff"
+import os from "node:os"
+import path from "node:path"
 
 function mockContext(options?: {
   vcsWorking?: Array<{ file: string; additions: number; deletions: number; status: "added" | "deleted" | "modified"; patch?: string }>
+  files?: Array<{ path: string; type: "file" | "directory" }>
 }) {
   const color = RGBA.fromInts(200, 200, 200)
   const green = RGBA.fromInts(0, 255, 0)
@@ -16,8 +19,8 @@ function mockContext(options?: {
       text: {
         base: color,
         muted: color,
-        action: { secondary: { base: color } },
-        feedback: { warning: { base: color } },
+        action: { secondary: { base: color }, primary: { base: color, hover: color } },
+        feedback: { warning: { base: color }, info: { base: color } },
       },
       diff: {
         text: {
@@ -28,7 +31,7 @@ function mockContext(options?: {
       },
       background: {
         base: color,
-        raised: { high: color },
+        raised: { high: color, base: color },
       },
     },
     data: {
@@ -42,6 +45,9 @@ function mockContext(options?: {
       },
     },
     client: {
+      fs: {
+        list: async () => ({ location: { directory: "/workspace" }, data: options?.files ?? [] }),
+      },
       vcs: {
         diff: async (params: any) => {
           if (params.mode === "working") {
@@ -49,6 +55,7 @@ function mockContext(options?: {
           }
           return { data: [] }
         },
+        init: async () => {},
       },
       session: {
         diff: async () => [],
@@ -57,6 +64,9 @@ function mockContext(options?: {
     ui: {
       router: {
         navigate: () => {},
+      },
+      toast: {
+        show: () => {},
       },
     },
   } as unknown as Context
@@ -108,4 +118,45 @@ test("sidebar diff displays changed files with stats", async () => {
   } finally {
     app.renderer.destroy()
   }
+})
+
+test("sidebar diff offers Git initialization when candidate project has no VCS", async () => {
+  const app = await testRender(
+    () =>
+      <SidebarDiff
+        context={mockContext({
+          files: [{ path: "package.json", type: "file" }],
+        })}
+        sessionID="session"
+      />,
+    {
+      width: 42,
+      height: 8,
+    },
+  )
+
+  try {
+    await new Promise((r) => setTimeout(r, 20))
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+    expect(frame).toContain("Diff")
+    expect(frame).toContain("no git")
+    expect(frame).toContain("Initialize Git repository")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("isExcludedDirectory correctly filters system, root, and home directories", () => {
+  const home = os.homedir()
+  expect(isExcludedDirectory(home)).toBe(true)
+  expect(isExcludedDirectory(path.join(home, "Desktop"))).toBe(true)
+  expect(isExcludedDirectory(path.join(home, "Downloads"))).toBe(true)
+  expect(isExcludedDirectory(os.tmpdir())).toBe(true)
+  expect(isExcludedDirectory(path.parse(home).root)).toBe(true)
+  expect(isExcludedDirectory("")).toBe(true)
+
+  // Normal project subdirectories are NOT excluded
+  expect(isExcludedDirectory(path.join(home, "Desktop", "my-project"))).toBe(false)
+  expect(isExcludedDirectory(path.join(home, "Projects", "frontend"))).toBe(false)
 })

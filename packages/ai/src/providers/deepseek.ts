@@ -110,12 +110,13 @@ export function resolveTargetModelID(
   return options.isThinking ? "deepseek-reasoner" : "deepseek-chat"
 }
 
-export function normalizeDeepSeekBody(body: unknown, isThinking?: boolean): unknown {
-  if (!body || typeof body !== "object") return body
-  const rawThinking = (body as any).thinking
-  if (rawThinking === undefined) return body
+export function normalizeDeepSeekBody(body: unknown, isThinking?: boolean): Record<string, unknown> | undefined {
+  if (!body || typeof body !== "object") return undefined
+  const record = body as Record<string, unknown>
+  const rawThinking = record.thinking
+  if (rawThinking === undefined) return record
   return {
-    ...(body as object),
+    ...record,
     thinking: typeof rawThinking === "boolean" ? rawThinking : Boolean(isThinking),
   }
 }
@@ -169,7 +170,7 @@ export const model: ProviderPackage.Definition<Settings, OpenAIProviderOptionsIn
     ? { ...headers, "x-dead-mode": "true" }
     : headers
   const mergedBody = isDead
-    ? { mode: "dead", dead_mode: true, ...(normalizedBody as object) }
+    ? { mode: "dead", dead_mode: true, ...normalizedBody }
     : normalizedBody
 
   return configure({

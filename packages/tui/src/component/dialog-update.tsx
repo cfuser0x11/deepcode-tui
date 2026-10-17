@@ -117,7 +117,7 @@ export function DialogUpdate(props: {
               <Match when={current.type === "available"}>
                 <box gap={1}>
                   <text fg={theme.text.base}>
-                    An update is available on GitHub: {current.version}
+                    An update is available on GitHub: {current.type === "available" ? current.version : ""}
                   </text>
                   <text fg={theme.text.muted}>
                     https://github.com/cfuser0x11/deepcode-tui/releases/latest

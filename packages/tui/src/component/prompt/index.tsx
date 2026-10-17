@@ -43,7 +43,6 @@ import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
-import { useConnected } from "../use-connected"
 import { useDeadMode } from "../../context/dead-mode"
 import { useToast } from "../../ui/toast"
 import { createFadeIn } from "../../util/signal"
@@ -313,7 +312,6 @@ export function Prompt(props: PromptProps) {
     ],
   }))
   const [cursorVersion, setCursorVersion] = createSignal(0)
-  const connected = useConnected()
 
   function promptModelWarning() {
     toast.show({
