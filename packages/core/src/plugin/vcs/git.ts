@@ -91,23 +91,21 @@ function make(proc: AppProcess.Interface, input: { directory: string; worktree: 
         ctx,
         list.filter((item) => item.status === "added" && !map.has(item.file)).map((item) => item.file),
       )
-      return yield* Effect.forEach(
-        list.toSorted((a, b) => a.file.localeCompare(b.file)),
-        (item) =>
-          Effect.gen(function* () {
-            const stat =
-              map.get(item.file) ??
-              (item.status === "added"
-                ? (untracked.stats.get(item.file) ?? (yield* git.statUntracked(ctx.worktree, item.file)))
-                : undefined)
-            return {
-              file: item.file,
-              additions: stat?.additions ?? 0,
-              deletions: stat?.deletions ?? 0,
-              status: item.status,
-            } satisfies FileStatus
-          }),
-      )
+      const sorted = list.toSorted((a, b) => a.file.localeCompare(b.file))
+      const out: FileStatus[] = []
+      for (const item of sorted) {
+        let stat = map.get(item.file) ?? (item.status === "added" ? untracked.stats.get(item.file) : undefined)
+        if (!stat && item.status === "added" && !untracked.capped) {
+          stat = yield* git.statUntracked(ctx.worktree, item.file)
+        }
+        out.push({
+          file: item.file,
+          additions: stat?.additions ?? 0,
+          deletions: stat?.deletions ?? 0,
+          status: item.status,
+        })
+      }
+      return out
     }),
     diff: Effect.fn("VcsGit.diff")(function* (mode: Mode, options?: DiffOptions) {
       const git = ctx.git
@@ -439,45 +437,61 @@ function makeGit(proc: AppProcess.Interface, env?: Record<string, string>) {
     file: string,
     options?: PatchOptions,
   ) {
-    const result = yield* run(
-      [
-        "diff",
-        "--no-index",
-        "--patch",
-        "--no-ext-diff",
-        "--no-renames",
-        `--unified=${options?.context ?? 3}`,
-        "--",
-        "/dev/null",
-        file,
-      ],
-      { cwd, maxOutputBytes: options?.maxOutputBytes },
-    )
-    return { text: result.truncated ? "" : result.text(), truncated: result.truncated } satisfies Patch
+    return yield* Effect.promise(async () => {
+      try {
+        const handle = Bun.file(path.join(cwd, file))
+        if (!(await handle.exists())) return { text: "", truncated: false } satisfies Patch
+        const size = handle.size
+        if (size > (options?.maxOutputBytes ?? MAX_PATCH_BYTES)) {
+          return { text: "", truncated: true } satisfies Patch
+        }
+        const buf = await handle.bytes()
+        const sampleLimit = Math.min(buf.length, 8000)
+        for (let i = 0; i < sampleLimit; i++) {
+          if (buf[i] === 0) return { text: "", truncated: false } satisfies Patch
+        }
+        const content = Buffer.from(buf).toString("utf8")
+        const normalized = file.replaceAll("\\", "/")
+        const lines = content.split(/\r?\n/)
+        if (lines.length > 0 && lines[lines.length - 1] === "") {
+          lines.pop()
+        }
+        const header = `diff --git a/${normalized} b/${normalized}\nnew file mode 100644\n--- /dev/null\n+++ b/${normalized}\n@@ -0,0 +1,${lines.length} @@\n`
+        return { text: header + lines.map((line) => `+${line}\n`).join(""), truncated: false } satisfies Patch
+      } catch {
+        return { text: "", truncated: false } satisfies Patch
+      }
+    })
   })
 
   const statUntracked = Effect.fn("VcsGit.statUntracked")(function* (cwd: string, file: string) {
-    const result = yield* run(["diff", "--no-index", "--numstat", "--", "/dev/null", file], {
-      cwd,
-      maxOutputBytes: 4096,
+    return yield* Effect.promise(async () => {
+      try {
+        const handle = Bun.file(path.join(cwd, file))
+        if (!(await handle.exists())) return
+        const size = handle.size
+        if (size === 0) return { file, additions: 0, deletions: 0 } satisfies Stat
+        if (size > MAX_PATCH_BYTES) return { file, additions: 0, deletions: 0 } satisfies Stat
+        const buf = await handle.bytes()
+        const sampleLimit = Math.min(buf.length, 8000)
+        for (let i = 0; i < sampleLimit; i++) {
+          if (buf[i] === 0) return { file, additions: 0, deletions: 0 } satisfies Stat
+        }
+        let additions = 0
+        for (let i = 0; i < buf.length; i++) {
+          if (buf[i] === 10) additions++
+        }
+        if (buf[buf.length - 1] !== 10) additions++
+        return { file, additions, deletions: 0 } satisfies Stat
+      } catch {
+        return undefined
+      }
     })
-    if (result.truncated) return
-
-    const parts = result.text().split("\t")
-    if (parts.length < 2) return
-
-    const additions = parts[0] === "-" ? 0 : Number.parseInt(parts[0] || "0", 10)
-    const deletions = parts[1] === "-" ? 0 : Number.parseInt(parts[1] || "0", 10)
-    return {
-      file,
-      additions: Number.isFinite(additions) ? additions : 0,
-      deletions: Number.isFinite(deletions) ? deletions : 0,
-    } satisfies Stat
   })
 
   // Paths are literal so names containing pathspec magic such as `*` or `[` match only themselves.
   const intentToAdd = Effect.fn("VcsGit.intentToAdd")(function* (cwd: string, list: string) {
-    yield* run(
+    const result = yield* run(
       [
         "--literal-pathspecs",
         "-c",
@@ -492,6 +506,7 @@ function makeGit(proc: AppProcess.Interface, env?: Record<string, string>) {
       ],
       { cwd },
     )
+    return result.exitCode === 0
   })
 
   const worktreeStats = Effect.fn("VcsGit.worktreeStats")(function* (cwd: string) {
@@ -526,7 +541,11 @@ function makeGit(proc: AppProcess.Interface, env?: Record<string, string>) {
   }
 }
 
-const emptyUntracked = () => ({ stats: new Map<string, Stat>(), patches: new Map<string, string>() })
+const emptyUntracked = () => ({
+  stats: new Map<string, Stat>(),
+  patches: new Map<string, string>(),
+  capped: false,
+})
 
 /**
  * Prefetches what `statUntracked` and `patchUntracked` report, in three Git processes instead of two
@@ -535,15 +554,19 @@ const emptyUntracked = () => ({ stats: new Map<string, Stat>(), patches: new Map
  * text as `git diff --no-index /dev/null <file>`. Files the batch cannot reproduce byte for byte are
  * left out, and callers fall back to the per-file commands.
  */
+const MAX_UNTRACKED_BATCH = 500
+
 const untrackedBatch = Effect.fnUntraced(function* (
   ctx: Ctx,
   files: readonly string[],
   // Patches are only built when requested; status needs line counts alone.
   patches?: DiffOptions,
 ) {
+  const initiallyCapped = files.length > MAX_UNTRACKED_BATCH
+  const candidates = initiallyCapped ? files.slice(0, MAX_UNTRACKED_BATCH) : files
   const eligible = yield* Effect.promise(() =>
     Promise.all(
-      files.map(async (file) => {
+      candidates.map(async (file) => {
         // Directories (nested repositories) and symlinks diff differently through an index.
         if (file.endsWith("/")) return
         const stat = await fs.lstat(path.join(ctx.worktree, file)).catch(() => undefined)
@@ -555,7 +578,7 @@ const untrackedBatch = Effect.fnUntraced(function* (
     ).then((list) => list.filter((file) => file !== undefined)),
   )
   // The batch costs up to three processes; for a single file the per-file commands are cheaper.
-  if (eligible.length < 2) return emptyUntracked()
+  if (eligible.length < 2) return { ...emptyUntracked(), capped: initiallyCapped }
 
   return yield* Effect.acquireUseRelease(
     Effect.promise(async () => {
@@ -566,7 +589,24 @@ const untrackedBatch = Effect.fnUntraced(function* (
     (base) =>
       Effect.gen(function* () {
         const git = makeGit(ctx.proc, { GIT_INDEX_FILE: `${base}.index` })
-        yield* git.intentToAdd(ctx.worktree, `${base}.list`)
+        const added = yield* git.intentToAdd(ctx.worktree, `${base}.list`)
+        if (!added) {
+          const sample = eligible.slice(0, 50)
+          const fallbackStats = yield* Effect.forEach(
+            sample,
+            (file) =>
+              Effect.gen(function* () {
+                const s = yield* git.statUntracked(ctx.worktree, file)
+                return s ? ([file, s] as const) : undefined
+              }),
+            { concurrency: 10 },
+          )
+          return {
+            stats: new Map(fallbackStats.filter((item): item is readonly [string, Stat] => item !== undefined)),
+            patches: new Map<string, string>(),
+            capped: true,
+          }
+        }
         const [stats, patch] = yield* Effect.all(
           [
             git.worktreeStats(ctx.worktree),
@@ -591,6 +631,7 @@ const untrackedBatch = Effect.fnUntraced(function* (
               return file === undefined ? [] : [[file, chunk] as const]
             }),
           ),
+          capped: patch.truncated || initiallyCapped,
         }
       }),
     (base) =>
@@ -662,7 +703,7 @@ const patchForItem = Effect.fnUntraced(function* (
   ref: string | undefined,
   item: Item,
   batch: { patches: Map<string, string>; capped: boolean },
-  untracked: Map<string, string>,
+  untracked: { patches: Map<string, string>; capped: boolean },
   capped: boolean,
   options?: GitDiffOptions,
 ) {
@@ -671,8 +712,9 @@ const patchForItem = Effect.fnUntraced(function* (
   const batched = batch.patches.get(item.file)
   if (batched !== undefined) return batched
   if (item.code !== "??" && batch.capped) return emptyPatch(item.file)
-  const prefetched = item.code === "??" || !ref ? untracked.get(item.file) : undefined
+  const prefetched = item.code === "??" || !ref ? untracked.patches.get(item.file) : undefined
   if (prefetched !== undefined) return prefetched
+  if (item.code === "??" && untracked.capped) return emptyPatch(item.file)
   return yield* nativePatch(ctx, ref, item, options)
 })
 
@@ -701,12 +743,23 @@ const files = Effect.fnUntraced(function* (
     const stat =
       map.get(item.file) ??
       (!options?.target && item.status === "added"
-        ? (untracked.stats.get(item.file) ?? (yield* ctx.git.statUntracked(ctx.worktree, item.file)))
+        ? (untracked.stats.get(item.file) ??
+          (untracked.capped ? undefined : yield* ctx.git.statUntracked(ctx.worktree, item.file)))
         : undefined)
-    const patch = yield* patchForItem(ctx, ref, item, batch, untracked.patches, capped, options)
-    const result: { patch: string; capped: boolean } = capped
-      ? { patch, capped: true }
-      : totalPatch(item.file, patch, total)
+
+    if (capped) {
+      next.push({
+        file: item.file,
+        patch: emptyPatch(item.file),
+        additions: stat?.additions ?? 0,
+        deletions: stat?.deletions ?? 0,
+        status: item.status,
+      })
+      continue
+    }
+
+    const patch = yield* patchForItem(ctx, ref, item, batch, untracked, capped, options)
+    const result: { patch: string; capped: boolean } = totalPatch(item.file, patch, total)
     capped = capped || result.capped
     if (!capped) {
       total += Buffer.byteLength(result.patch)
