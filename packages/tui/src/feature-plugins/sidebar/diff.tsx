@@ -200,7 +200,11 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
     return status
   })
 
-  const files = createMemo(() => diff() ?? [])
+  const MAX_SIDEBAR_FILES = 20
+
+  const files = createMemo(() => (diff.error || diff.loading ? [] : (diff() ?? [])))
+  const visibleFiles = createMemo(() => files().slice(0, MAX_SIDEBAR_FILES))
+  const remainingCount = createMemo(() => Math.max(0, files().length - MAX_SIDEBAR_FILES))
   const totalAdditions = createMemo(() => files().reduce((sum, f) => sum + f.additions, 0))
   const totalDeletions = createMemo(() => files().reduce((sum, f) => sum + f.deletions, 0))
 
@@ -275,6 +279,11 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
 
       {/* File List */}
       <Switch>
+        <Match when={diff.error}>
+          <text fg={theme.text.feedback.error.base ?? theme.text.muted} attributes={TextAttributes.DIM}>
+            Diff unavailable
+          </text>
+        </Match>
         <Match when={diff.loading && files().length === 0}>
           <text fg={theme.text.muted}>Loading diff…</text>
         </Match>
@@ -314,7 +323,7 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
         </Match>
         <Match when={files().length > 0}>
           <box flexDirection="column" marginTop={0}>
-            <For each={files()}>
+            <For each={visibleFiles()}>
               {(file) => {
                 const isExpanded = () => expandedFiles().has(file.file)
                 const isHovered = () => hoveredFile() === file.file
@@ -331,7 +340,10 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
 
                 const patchLines = createMemo(() => {
                   if (!isExpanded() || !file.patch) return []
-                  return file.patch.split(/\r?\n/).slice(0, 15)
+                  return file.patch
+                    .split(/\r?\n/)
+                    .slice(0, 15)
+                    .map((line) => (line.length > 300 ? line.slice(0, 300) : line))
                 })
 
                 return (
@@ -419,6 +431,19 @@ export function SidebarDiff(props: { context: Plugin.Context; sessionID: string 
                 )
               }}
             </For>
+            <Show when={remainingCount() > 0}>
+              <box
+                flexDirection="row"
+                paddingTop={0}
+                onMouseUp={(e) => {
+                  if (e.button === MouseButton.LEFT) openDiffViewer()
+                }}
+              >
+                <text fg={theme.text.action.secondary.base} wrapMode="none">
+                  … and {remainingCount()} more {remainingCount() === 1 ? "file" : "files"}
+                </text>
+              </box>
+            </Show>
           </box>
         </Match>
       </Switch>
