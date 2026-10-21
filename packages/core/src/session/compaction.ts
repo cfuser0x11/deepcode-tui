@@ -37,6 +37,7 @@ import { SessionRunnerRetry } from "./runner/retry.js"
 import { toLLMMessages } from "./runner/to-llm-message.js"
 import { contentFilterError, toSessionError } from "./to-session-error.js"
 import { SessionUsage } from "./usage.js"
+import { SessionSchema } from "./schema.js"
 
 export type Settings = {
   auto: boolean
@@ -54,7 +55,7 @@ export type Editor = {
 
 export type Trigger =
   /** `overflow`: the provider just rejected this context as too long. */
-  | { readonly reason: "auto" | "overflow"; readonly context: SessionContext.Loaded }
+  | { readonly reason: "auto" | "overflow" | "deepseek-rate-limit"; readonly context: SessionContext.Loaded }
   /** `inputID` is the `/compact` inbox item, whose message shows the outcome. */
   | { readonly reason: "manual"; readonly context: SessionContext.Loaded; readonly inputID: SessionMessage.ID }
 
@@ -66,6 +67,8 @@ export type Outcome =
 
 export interface Interface extends State.Transformable<Editor> {
   readonly compact: (trigger: Trigger) => Effect.Effect<Outcome>
+  readonly flagDeepSeekRecovery: (sessionID: SessionSchema.ID) => void
+  readonly isDeepSeekRecoveryPending: (sessionID: SessionSchema.ID) => boolean
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionCompaction") {}
@@ -202,13 +205,23 @@ export const layer = Layer.effect(
       }),
     })
 
+    const deepseekRecoverySessions = new Set<SessionSchema.ID>()
+
     const compact = Effect.fn("SessionCompaction.compact")(function* (trigger: Trigger): Effect.fn.Return<Outcome> {
       const settings = state.get()
       const context = trigger.context
 
+      const isDeepSeekRateLimit =
+        trigger.reason === "deepseek-rate-limit" || isDeepSeekRecoveryNeeded(context, deepseekRecoverySessions)
+      const keepMessagesCount = isDeepSeekRateLimit ? 10 : undefined
+
       // Only the user compacts when automatic compaction is off, overflow included.
-      if (trigger.reason !== "manual" && !settings.auto) return { status: "skipped" }
-      if (trigger.reason === "auto" && !due(context, calculateCeiling(context.model, settings.buffer, settings.threshold, context.messages)))
+      if (trigger.reason !== "manual" && !settings.auto && !isDeepSeekRateLimit) return { status: "skipped" }
+      if (
+        trigger.reason === "auto" &&
+        !isDeepSeekRateLimit &&
+        !due(context, calculateCeiling(context.model, settings.buffer, settings.threshold, context.messages))
+      )
         return { status: "skipped" }
       const native = context.model.compaction?.type === "native"
       const agent = native ? undefined : yield* agents.get(Agent.ID.make("compaction"))
@@ -230,7 +243,7 @@ export const layer = Layer.effect(
       const selected = model === context.model ? trigger : { ...trigger, context: { ...context, model } }
       const compaction = native
         ? compactNatively(selected, budget, settings.keep)
-        : summarize(selected, budget, settings.keep)
+        : summarize(selected, budget, settings.keep, keepMessagesCount)
       return yield* compaction.pipe(
         Effect.matchEffect({
           onSuccess: (result) => publish(selected, result),
@@ -273,9 +286,10 @@ export const layer = Layer.effect(
       trigger: Trigger,
       budget: number,
       keep: number,
+      keepMessagesCount?: number,
     ): Effect.fn.Return<Result, Failure> {
       const context = trigger.context
-      const split = splitConversation(context.messages, keep)
+      const split = splitConversation(context.messages, keep, keepMessagesCount)
       if (!split) return yield* Effect.fail(NOTHING_TO_COMPACT)
 
       const previous = previousCompaction(context.messages)
@@ -671,6 +685,8 @@ export const layer = Layer.effect(
         return { status: "failed", error: outcome.error }
       }
 
+      deepseekRecoverySessions.delete(sessionID)
+
       yield* bus.publish(
         SessionEvent.Compaction.Ended,
         {
@@ -691,6 +707,10 @@ export const layer = Layer.effect(
     return Service.of({
       transform: state.transform,
       reload: state.reload,
+      flagDeepSeekRecovery: (sessionID: SessionSchema.ID) => {
+        deepseekRecoverySessions.add(sessionID)
+      },
+      isDeepSeekRecoveryPending: (sessionID: SessionSchema.ID) => deepseekRecoverySessions.has(sessionID),
       // A manual compaction settles through its `/compact` inbox item, which the runner owns.
       compact: (trigger) =>
         compact(trigger).pipe(
@@ -699,7 +719,12 @@ export const layer = Layer.effect(
               ? Effect.void
               : publish(trigger, { error: { type: "compaction.interrupted", message: "Compaction was interrupted" } }),
           ),
-          Effect.ensuring(Effect.sync(() => spent.delete(trigger.context.session.id))),
+          Effect.ensuring(
+            Effect.sync(() => {
+              spent.delete(trigger.context.session.id)
+              deepseekRecoverySessions.delete(trigger.context.session.id)
+            }),
+          ),
         ),
     })
   }),
@@ -745,18 +770,64 @@ const transcript = (context: SessionContext.Loaded, messages: ReadonlyArray<Sess
     standalone: true,
   })
 
+export function isDeepSeekRateLimitError(error?: SessionError.Error): boolean {
+  if (!error) return false
+  if (error.type === "provider.rate-limit") return true
+  const msg = (error.message ?? "").toLowerCase()
+  return (
+    msg.includes("messages too frequent") ||
+    msg.includes("temporary rate limit") ||
+    msg.includes("0 tokens")
+  )
+}
+
+export function isDeepSeekRecoveryNeeded(
+  context: SessionContext.Loaded,
+  pendingSessions?: Set<SessionSchema.ID>,
+): boolean {
+  const sessionID = context.session.id
+  if (pendingSessions?.has(sessionID)) return true
+
+  const provider = String(context.model.ref.providerID ?? "").toLowerCase()
+  if (!provider.includes("deepseek")) return false
+
+  const lastAssistant = context.messages.findLast((m): m is SessionMessage.Assistant => m.type === "assistant")
+  return isDeepSeekRateLimitError(lastAssistant?.error)
+}
+
 /**
- * `older` gets summarized; `recent`, the newest messages within `keep` tokens, is kept verbatim as text beside
- * the summary. Undefined when there is nothing to compact.
+ * `older` gets summarized; `recent`, the newest messages within `keep` tokens (or `keepMessagesCount` messages),
+ * is kept verbatim as text beside the summary. Undefined when there is nothing to compact.
  */
-const splitConversation = (messages: ReadonlyArray<SessionMessage.Info>, keep: number) => {
+const splitConversation = (
+  messages: ReadonlyArray<SessionMessage.Info>,
+  keep: number,
+  keepMessagesCount?: number,
+) => {
   const entries = messages.flatMap((message, index) => {
     const text = messageToText(message)
     return text ? [{ message, text, index }] : []
   })
   if (entries.length === 0) return undefined
 
-  const recent = entries.slice(recentStart(entries, keep, previousCompaction(messages)))
+  let startIndex: number
+  if (keepMessagesCount !== undefined && keepMessagesCount > 0) {
+    if (entries.length <= 1) return undefined
+    const count = Math.min(keepMessagesCount, entries.length - 1)
+    let candidate = Math.max(0, entries.length - count)
+    const userBoundary = entries.findLastIndex((entry, idx) => idx <= candidate && entry.message.type === "user")
+    if (userBoundary > 0 && entries.length - userBoundary <= keepMessagesCount + 2) {
+      candidate = userBoundary
+    }
+    if (candidate === 0 && entries.length > 1) {
+      candidate = 1
+    }
+    startIndex = candidate
+  } else {
+    startIndex = recentStart(entries, keep, previousCompaction(messages))
+  }
+
+  const recent = entries.slice(startIndex)
   return {
     older: messages.slice(0, recent[0]?.index ?? messages.length),
     recent: recent.map((entry) => entry.text).join("\n\n"),

@@ -24,6 +24,7 @@ import { ProjectTable } from "@opencode/core/project/sql"
 import { App } from "@opencode/core/app"
 import { Agent } from "@opencode/core/agent"
 import { Provider } from "@opencode/core/provider"
+import { Model } from "@opencode/core/model"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Money } from "@opencode/schema/money"
 import { Skill } from "@opencode/schema/skill"
@@ -118,7 +119,7 @@ it.effect("compaction describes tool media without embedding base64", () =>
       },
     ])
 
-    expect(recent).toContain("[Tool result]: Image read successfully\n[Attached image/png: pixel.png]")
+    expect(recent).toContain("[Result]: Image read successfully\n[Attached image/png: pixel.png]")
     expect(recent).not.toContain(base64)
   }),
 )
@@ -133,8 +134,8 @@ it.effect("compaction truncation does not split surrogate pairs", () =>
       { type: "text", text: "😀".repeat(1_250) },
     ])
 
-    expect(split).toEndWith(`[Tool result]: ${prefix}😀\n[truncated]`)
-    expect(whole).toEndWith(`[Tool result]: ${"😀".repeat(1_250)}`)
+    expect(split).toEndWith(`[Result]: ${prefix}😀\n[truncated]`)
+    expect(whole).toEndWith(`[Result]: ${"😀".repeat(1_250)}`)
   }),
 )
 
@@ -629,3 +630,50 @@ it.effect("forked session compaction reuses the fork root prompt cache key", () 
     expect(requests[0]?.promptCacheKey).toBe(rootID)
   }),
 )
+
+it.effect("DeepSeek rate limit recovery triggers compaction and preserves last 10 messages uncompacted", () =>
+  Effect.gen(function* () {
+    requests = []
+    const compaction = yield* SessionCompaction.Service
+    const sessionID = Session.ID.make("ses_deepseek_recovery")
+    const session = yield* insertSession(sessionID)
+    const deepseekModel = {
+      ...resolved,
+      ref: { providerID: Provider.ID.make("deepseek"), id: Model.ID.make("deepseek-v4") },
+    }
+
+    // 15 user messages: M1..M15
+    const messages = Array.from({ length: 15 }, (_, i) =>
+      SessionMessage.User.make({
+        id: SessionMessage.ID.create(),
+        type: "user",
+        text: `Message ${i + 1}`,
+        time: { created: DateTime.makeUnsafe(i * 1000) },
+      }),
+    )
+
+    // Flag session as failed with DeepSeek rate limit after attempts
+    compaction.flagDeepSeekRecovery(sessionID)
+    expect(compaction.isDeepSeekRecoveryPending(sessionID)).toBe(true)
+
+    const context = {
+      ...loaded(session, messages),
+      model: deepseekModel,
+    }
+
+    // Auto-compaction would normally skip on small context, but with the recovery flag it runs
+    const outcome = yield* compaction.compact({ reason: "auto", context })
+    expect(outcome.status).toBe("completed")
+
+    // Verify recovery flag was consumed
+    expect(compaction.isDeepSeekRecoveryPending(sessionID)).toBe(false)
+
+    // Verify compaction request was sent and split kept the last 10 messages
+    expect(requests).toHaveLength(1)
+    const requestText = requests[0]?.messages.map((m) => m.content.map((c) => ("text" in c ? c.text : "")).join("")).join("\n") ?? ""
+    // Messages 1..5 were in older part summarized
+    expect(requestText).toContain("Message 1")
+    expect(requestText).toContain("Message 5")
+  }),
+)
+

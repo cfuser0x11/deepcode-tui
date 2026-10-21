@@ -47,6 +47,25 @@ const NUDGE_STEP3_PROMPT =
 const NUDGE_EMPTY_PROMPT =
   "CRITICAL EXECUTION: Your previous response was empty because thinking consumed all output tokens before emitting a tool call. KEEP YOUR THINKING VERY BRIEF (<10 lines) and emit the required tool call IMMEDIATELY using XML tags (e.g. <tool_call name=\"read\">, <tool_call name=\"edit\">, or <tool_call name=\"shell\">). If tasks are finished, output your final summary directly."
 
+function isDeepSeekRateLimitFailure(cause: unknown): boolean {
+  const extract = (val: unknown): string => {
+    if (!val || typeof val !== "object") return ""
+    const parts: string[] = []
+    if ("message" in val && typeof (val as any).message === "string") parts.push((val as any).message)
+    if ("error" in val) parts.push(extract((val as any).error))
+    if ("reason" in val) parts.push(extract((val as any).reason))
+    if ("body" in val && typeof (val as any).body === "string") parts.push((val as any).body)
+    return parts.join(" ")
+  }
+  const text = extract(cause).toLowerCase()
+  return (
+    text.includes("messages too frequent") ||
+    text.includes("temporary rate limit") ||
+    text.includes("0 tokens") ||
+    text.includes("rate limit")
+  )
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -271,33 +290,47 @@ const layer = Layer.effect(
             m.type === "shell" ||
             (m.type === "assistant" && m.content.some((c) => c.type === "tool")),
         )
-        const outcome = yield* steps.attempt({
-          isLocationClosed: lifecycle.isClosed,
-          sessionID,
-          assistantMessageID,
-          agent: loaded.agent.id,
-          model: loaded.model,
-          prepared,
-          hadExplorationTools,
-          consecutiveNudges,
-          retry: (cause, error, proposed) =>
-            retry.decide({
-              cause,
-              error,
-              agent: loaded.agent.id,
-              model: loaded.model.ref,
-              hook: prepared.retry,
-              retry: proposed,
-            }),
-          recoverContinuation,
-          recoverOverflow: Effect.suspend(() =>
-            recoverOverflow
-              ? compaction
-                  .compact({ reason: "overflow", context: loaded })
-                  .pipe(Effect.map((result) => result.status === "completed"))
-              : Effect.succeed(false),
-          ),
-        })
+        const outcome = yield* steps
+          .attempt({
+            isLocationClosed: lifecycle.isClosed,
+            sessionID,
+            assistantMessageID,
+            agent: loaded.agent.id,
+            model: loaded.model,
+            prepared,
+            hadExplorationTools,
+            consecutiveNudges,
+            retry: (cause, error, proposed) =>
+              retry.decide({
+                cause,
+                error,
+                agent: loaded.agent.id,
+                model: loaded.model.ref,
+                hook: prepared.retry,
+                retry: proposed,
+              }),
+            recoverContinuation,
+            recoverOverflow: Effect.suspend(() =>
+              recoverOverflow
+                ? compaction
+                    .compact({ reason: "overflow", context: loaded })
+                    .pipe(Effect.map((result) => result.status === "completed"))
+                : Effect.succeed(false),
+            ),
+          })
+          .pipe(
+            Effect.tapError((cause) =>
+              Effect.sync(() => {
+                const provider = String(loaded.model.ref.providerID ?? "").toLowerCase()
+                if (provider.includes("deepseek")) {
+                  const stepFailed = cause instanceof StepFailedError ? cause.error : undefined
+                  if (SessionCompaction.isDeepSeekRateLimitError(stepFailed) || isDeepSeekRateLimitFailure(cause)) {
+                    compaction.flagDeepSeekRecovery(sessionID)
+                  }
+                }
+              }),
+            ),
+          )
         const completed = yield* SessionStep.Outcome.$match(outcome, {
           Completed: (outcome) =>
             Effect.gen(function* () {
