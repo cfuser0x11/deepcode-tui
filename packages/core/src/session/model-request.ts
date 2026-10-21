@@ -148,7 +148,14 @@ export const baseTranscript = (input: {
     providerMetadataKey,
     conversationId: undefined,
     system: isDead
-      ? []
+      ? [
+          SessionSystemPrompt.make(
+            input.tools.definitions.map((tool) => tool.name),
+            { deadMode: true },
+          ),
+        ]
+          .filter((part) => part.length > 0)
+          .map(SystemPart.make)
       : [
           input.agent.system
             ? input.agent.system
@@ -320,12 +327,6 @@ export const layer = Layer.effect(
       const generation = Object.fromEntries(entries.filter(([k]) => GENERATION_KEYS.has(k))) as GenerationOptionsFields
       const providerOptions = Object.fromEntries(entries.filter(([k]) => !GENERATION_KEYS.has(k)))
       const affinity = SessionAffinity.get(session)
-      const isDead = Boolean(
-        model.model.id.endsWith("-dead") ||
-        model.model.route.defaults?.headers?.["x-dead-mode"] === "true" ||
-        process.env.DEEPCODE_DEAD_MODE === "1" ||
-        process.env.DEAD_MODE === "1",
-      )
       const base = LLM.request({
         model: model.model,
         http: {
@@ -343,7 +344,7 @@ export const layer = Layer.effect(
         },
         // TODO: Persist cache lineage so nested forks reuse the root session's cache key.
         promptCacheKey: /^ses_[0-9a-f]{64}$/.test(affinity) ? affinity.slice(4) : affinity,
-        system: isDead ? [] : shaped.system,
+        system: shaped.system,
         messages: boundImages(unsupportedParts(shaped.messages, model.capabilities, model.model.provider)),
 
         tools: Array.from(hooked, ([name, t]) => ({ ...t, name })),

@@ -10,19 +10,7 @@ export function isDeadMode(options?: { deadMode?: boolean }) {
   )
 }
 
-export function make(tools: string[], options?: { deadMode?: boolean }) {
-  if (isDeadMode(options)) {
-    return ""
-  }
-  return render(PROMPT, tools, options)
-}
-
-export const DEAD_MODE_PROMPT = ""
-
-export function render(prompt: string, tools: string[], options?: { deadMode?: boolean }) {
-  if (isDeadMode(options)) {
-    return ""
-  }
+export function toolInstructions(tools: string[]) {
   const instructions: string[] = []
   if (tools.includes("shell")) {
     instructions.push(
@@ -46,6 +34,35 @@ export function render(prompt: string, tools: string[], options?: { deadMode?: b
       `- Direct workspace tools (${workspaceTools.join(", ")}) are always active. Use native tool calling or format calls as \`<tool_call name="tool_name">{"param": "value"}</tool_call>\`.`,
     )
   }
+  return instructions
+}
+
+export function renderDeadModePrompt(tools: string[]) {
+  const instructions = toolInstructions(tools)
+  const lines: string[] = []
+  if (tools.length > 0) {
+    lines.push(`Available tools: ${tools.join(", ")}.`)
+  }
+  if (instructions.length > 0) {
+    lines.push(...instructions)
+  }
+  return lines.join("\n")
+}
+
+export function make(tools: string[], options?: { deadMode?: boolean }) {
+  if (isDeadMode(options)) {
+    return renderDeadModePrompt(tools)
+  }
+  return render(PROMPT, tools, options)
+}
+
+export const DEAD_MODE_PROMPT = ""
+
+export function render(prompt: string, tools: string[], options?: { deadMode?: boolean }) {
+  if (isDeadMode(options)) {
+    return renderDeadModePrompt(tools)
+  }
+  const instructions = toolInstructions(tools)
   return prompt.replace("${OPENCODE_TOOL_GUIDANCE}", instructions.join("\n"))
 }
 

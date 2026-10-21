@@ -13,20 +13,26 @@ test("renders the default system prompt instructions", () => {
   expect(prompt).toContain("You are DeepCode agent")
 })
 
-test("omits persona and instructions in dead mode option", () => {
+test("omits persona but keeps tool instructions in dead mode option", () => {
   const prompt = SessionSystemPrompt.make(["edit", "read", "shell"], { deadMode: true })
-  expect(prompt).toBe("")
+  expect(prompt).not.toContain("DeepCode agent")
+  expect(prompt).toContain("Available tools: edit, read, shell.")
+  expect(prompt).toContain("Use the edit tool for targeted changes to existing text files")
 })
 
-test("omits persona and instructions when DEEPCODE_DEAD_MODE is set", () => {
+test("omits persona but keeps tool instructions when DEEPCODE_DEAD_MODE is set", () => {
   process.env.DEEPCODE_DEAD_MODE = "1"
   const prompt = SessionSystemPrompt.make(["edit", "read", "shell"])
-  expect(prompt).toBe("")
+  expect(prompt).not.toContain("DeepCode agent")
+  expect(prompt).toContain("Available tools: edit, read, shell.")
+  expect(prompt).toContain("Use the edit tool for targeted changes to existing text files")
 })
 
-test("omits persona and instructions when DEAD_MODE is set", () => {
+test("omits persona but keeps tool instructions when DEAD_MODE is set", () => {
   process.env.DEAD_MODE = "1"
   const prompt = SessionSystemPrompt.make(["edit", "read", "shell"])
-  expect(prompt).toBe("")
+  expect(prompt).not.toContain("DeepCode agent")
+  expect(prompt).toContain("Available tools: edit, read, shell.")
+  expect(prompt).toContain("Use the edit tool for targeted changes to existing text files")
 })
 
