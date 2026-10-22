@@ -1,8 +1,13 @@
 import { createSignal } from "solid-js"
+import { getSavedDeadMode, saveDeadMode } from "@opencode/util/dead-mode"
 
-const [isDeadMode, setIsDeadMode] = createSignal(
-  process.env.DEEPCODE_DEAD_MODE === "1" || process.env.DEAD_MODE === "1",
-)
+const initial = getSavedDeadMode()
+if (initial) {
+  process.env.DEEPCODE_DEAD_MODE = "1"
+  process.env.DEAD_MODE = "1"
+}
+
+const [isDeadMode, setIsDeadMode] = createSignal(initial)
 
 export function useDeadMode() {
   return {
@@ -10,13 +15,7 @@ export function useDeadMode() {
     toggle: () => {
       const next = !isDeadMode()
       setIsDeadMode(next)
-      if (next) {
-        process.env.DEEPCODE_DEAD_MODE = "1"
-        process.env.DEAD_MODE = "1"
-      } else {
-        delete process.env.DEEPCODE_DEAD_MODE
-        delete process.env.DEAD_MODE
-      }
+      saveDeadMode(next)
       return next
     },
   }

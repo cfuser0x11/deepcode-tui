@@ -17,6 +17,7 @@ import { OpenCode } from "@opencode/client/promise"
 import { findSession } from "../../session-target"
 import { errorMessage } from "../../util/error"
 import { hasDeepSeekConfig, runDeepSeekSetup } from "../../setup"
+import { getSavedDeadMode, saveDeadMode } from "@opencode/util/dead-mode"
 import { startSpinner } from "../../util/spinner"
 
 export type DefaultInput = {
@@ -37,14 +38,17 @@ export type DefaultInput = {
 export const runDefault = (input: DefaultInput) =>
   Effect.gen(function* () {
     if (input.dead) {
+      saveDeadMode(true)
+    } else if (getSavedDeadMode()) {
       process.env.DEEPCODE_DEAD_MODE = "1"
+      process.env.DEAD_MODE = "1"
     }
     const setupSuccess = yield* Effect.promise(() => runDeepSeekSetup(Boolean(input.setup)))
     if (!setupSuccess && !hasDeepSeekConfig()) {
       return
     }
-    const requestedDirectory = Option.getOrUndefined(input.directory)
-    const requestedServer = Option.getOrUndefined(input.server)
+    const requestedDirectory = input.directory ? Option.getOrUndefined(input.directory) : undefined
+    const requestedServer = input.server ? Option.getOrUndefined(input.server) : undefined
     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
     const preflight = UpdatePreflight.make()
     yield* Effect.addFinalizer(() => Effect.promise(() => preflight.close()))
@@ -88,7 +92,7 @@ export const runDefault = (input: DefaultInput) =>
     if (spinner) {
       spinner.stop(`Connected to background service (${server.endpoint.url})`)
     }
-    const session = Option.getOrUndefined(input.session)
+    const session = input.session ? Option.getOrUndefined(input.session) : undefined
     // A missing --session ID becomes the ID of the session the first prompt creates.
     const sessionExists =
       session !== undefined &&
@@ -163,7 +167,7 @@ export const runDefault = (input: DefaultInput) =>
         continue: input.continue,
         sessionID: sessionExists ? session : undefined,
         newSessionID: sessionExists ? undefined : session,
-        prompt: Option.getOrUndefined(input.prompt),
+        prompt: input.prompt ? Option.getOrUndefined(input.prompt) : undefined,
         auto: input.auto || input.yolo || input.dangerouslySkipPermissions,
       },
       config: {

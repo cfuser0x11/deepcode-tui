@@ -1,4 +1,5 @@
 import { Effect, Option } from "effect"
+import { getSavedDeadMode, saveDeadMode } from "@opencode/util/dead-mode"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { ServerConnection } from "../../services/server-connection"
@@ -7,7 +8,10 @@ export default Runtime.handler(Commands.commands.run, (input) =>
   Effect.gen(function* () {
     const { runNonInteractive } = yield* Effect.promise(() => import("../../run/run"))
     if (input.dead) {
+      saveDeadMode(true)
+    } else if (getSavedDeadMode()) {
       process.env.DEEPCODE_DEAD_MODE = "1"
+      process.env.DEAD_MODE = "1"
     }
     const separator = process.argv.indexOf("--", 2)
     const server = yield* ServerConnection.resolve({
